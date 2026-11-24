@@ -4,7 +4,10 @@ Registro da preparação do ambiente (2026-11-24). Este documento não define re
 
 ## Estado do ambiente
 
-- Repositório em `C:\dev\Seceletesc` (clone do original em OneDrive, mesmo commit `a02d02b`). Sem remote.
+- Repositório em `C:\dev\Seceletesc` (clone do original em OneDrive; a pasta antiga foi excluída).
+- Remote: `https://github.com/Goularts/Seceletesc`, **público**. Decisão do Victor: repositório público no GitHub Free, porque nele a branch protection é gratuita.
+- Autor dos commits: e-mail noreply do GitHub, configurado só neste repositório. O histórico foi reescrito antes do primeiro push para não expor o e-mail pessoal; por isso o commit inicial passou de `a02d02b` para `c28f353`, com conteúdo idêntico.
+- Não versionar nada sensível: o repositório é público. Segredos ficam fora do Git (ver `.gitignore`).
 - Claude Code lê as regras via `CLAUDE.md`, que importa `AGENTS.md` e `docs/`.
 - GitHub Copilot (VS Code e cloud agent) lê `AGENTS.md` nativamente; por isso não há `.github/copilot-instructions.md`.
 - Ruflo `3.80.6`, só no escopo do projeto.
@@ -78,22 +81,15 @@ Os agentes somente leitura não executam `git diff`; quem os chama deve incluir 
 
 Revisão independente é feita por humano ou CI.
 
-### 1. CODEOWNERS (`.github/CODEOWNERS`)
+### 1. CODEOWNERS (`.github/CODEOWNERS`): aplicado
 
-Depende das pendências 1 e 2. Rascunho:
+Todos os caminhos protegidos apontam para `@Goularts`. Enquanto não houver branch protection, o arquivo só adiciona o Victor como revisor automático; não bloqueia merge.
 
-```
-/AGENTS.md              @<usuario-github>
-/CLAUDE.md              @<usuario-github>
-/.claude/               @<usuario-github>
-/.mcp.json              @<usuario-github>
-/docs/business-rules/   @<usuario-github>
-/.github/               @<usuario-github>
-```
+### 2. Branch protection na branch principal: adiada
 
-### 2. Branch protection na branch principal
+Decisão do Victor: ativar quando houver CI. Proposta: PR obrigatório, status checks do CI obrigatórios, sem push direto e sem force push, regras aplicadas também a administradores.
 
-Depende de remote. Proposta: PR obrigatório, 1 aprovação de code owner, status checks do CI obrigatórios, sem push direto e sem force push, regras aplicadas também a administradores.
+Problema em aberto (pendência 9): o GitHub não deixa o autor aprovar o próprio PR. Se os agentes fizerem push com a conta do Victor, exigir aprovação de code owner trava todo PR. Alternativas: conta GitHub separada para os agentes, ou exigir só PR + CI verde.
 
 ### 3. CI
 
@@ -143,13 +139,16 @@ fi
 
 ## Decisões pendentes de ambiente
 
-1. Remote privado (GitHub?) para backup e branch protection. Hoje o repositório só existe localmente.
-2. Usuários do GitHub no CODEOWNERS.
+1. ~~Remote~~: resolvida. GitHub público (`Goularts/Seceletesc`).
+2. ~~Usuários do GitHub no CODEOWNERS~~: resolvida. `@Goularts`.
 3. Provedor de CI.
 4. Nível do Ruflo: manter mínimo? Habilitar memória persistente ou vetorial?
 5. Manter ou remover configuração do Codex neste repositório (hoje não há nenhuma).
 6. Terminal padrão (CMD ou PowerShell).
 7. Estrutura da solução .NET.
 8. Ativar o hook de pre-commit proposto.
+9. Quem aprova PR: conta GitHub separada para os agentes ou só PR + CI (ver seção 2 das proteções). Decidir junto com a branch protection.
+
+O monitoramento do piloto do Ruflo fica em `docs/setup/ruflo-piloto-qa.md`.
 
 As decisões pendentes de negócio estão em `docs/project-context.md`.

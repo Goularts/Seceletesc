@@ -1,0 +1,8 @@
+# Caminhos protegidos: exigem revisão do Victor.
+# Só bloqueia o merge quando a branch protection estiver ativa (ver docs/setup/ambiente-e-protecoes.md).
+/AGENTS.md              @Goularts
+/CLAUDE.md              @Goularts
+/.claude/               @Goularts
+/.mcp.json              @Goularts
+/docs/business-rules/   @Goularts
+/.github/               @Goularts
