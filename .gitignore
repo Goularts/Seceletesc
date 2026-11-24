@@ -1,0 +1,52 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.rsuser
+.vs/
+TestResults/
+*.nupkg
+packages/
+
+# Segredos / config local
+.env
+.env.*
+!.env.example
+appsettings.*.local.json
+secrets*.json
+
+# Claude Code (overrides locais)
+.claude/settings.local.json
+CLAUDE.local.md
+
+# Ruflo (dados locais)
+.claude-flow/data/
+
+# Codex (até decidir a pendência 5)
+.codex/
+
+# Node (caso o Ruflo crie algo local)
+node_modules/
+
+# SO / editores
+Thumbs.db
+.DS_Store
+
+# Ruflo local secrets and runtime data
+.env.local
+.env.*.local
+.claude-flow/logs/
+.claude-flow/sessions/
+
+# Ruflo: estado de runtime gerado (doctor/daemon)
+.claude-flow/daemon.lock
+.claude-flow/daemon.pid
+.claude-flow/daemon.stopped
+.claude-flow/daemon-state.json
+.claude-flow/metrics/
+.swarm/
+.claude-flow/harness-active-policy.json
+.claude-flow/policy/
+.claude/proven-config.json
+.claude/.proven-config-version
