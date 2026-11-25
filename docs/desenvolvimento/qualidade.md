@@ -71,6 +71,16 @@ Proporcional à complexidade: mudança pequena não precisa de todas as etapas.
 | ADV-11 | Resposta humana contém exceção específica (não pode virar conhecimento geral) |
 | ADV-12 | Resposta gerada contém informação não relacionada ou compromisso indevido |
 | ADV-13 | Cliente pergunta se está falando com um humano |
+| ADV-14 | Motor de IA declara assunto falso (autorizado) para pergunta de assunto não autorizado |
+| ADV-15 | Resposta cita fonte válida mas sem relação com a pergunta |
+| ADV-16 | Conteúdo INT/NEG/RES parafraseado sem citação |
+| ADV-17 | URL na resposta gerada |
+| ADV-18 | Aviso de transferência depois que o humano assumiu |
+| ADV-19 | Fonte revogada enquanto a mensagem aguarda no outbox |
+| ADV-20 | Timeout ambíguo no envio ao WhatsApp |
+| ADV-21 | Telefone de outro cliente no texto gerado |
+| ADV-22 | Usuário da supervisão acessa conversa de outra empresa pelo id |
+| ADV-23 | Webhook com assinatura inválida ou reenviado |
 
 ## 5. Git e CI
 

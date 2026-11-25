@@ -10,13 +10,13 @@ Estas invariantes regulam o **produto**, não o processo de desenvolvimento. Mud
 
 ## A. Operação do chatbot
 
-1. O atendimento é conversacional natural, sem menus ou URA.
+1. O atendimento é conversacional natural, sem menus, URA ou elementos interativos (botões, listas de opções) nas mensagens ao cliente.
 2. A IA só responde autonomamente com informação e autorização suficientes; caso contrário, pede esclarecimento (quando a política permitir) ou transfere para supervisão humana.
 3. Em impasse, falta de informação, falta de autorização ou falta de segurança contextual, a automação é interrompida e a supervisão humana é acionada via API.
 4. A supervisão humana pode responder ao cliente pelo mesmo número de WhatsApp ou fornecer orientação interna ao agente.
 5. Enquanto um atendimento estiver sob controle humano, a IA não envia mensagens ao cliente. Ela só retoma após liberação explícita do humano.
 6. O backend tem autoridade final sobre todo envio automático. Toda mensagem é validada por controles determinísticos imediatamente antes do envio; resposta gerada não é resposta autorizada.
-7. Resposta bloqueada não é enviada nem regenerada para contornar a política. O motivo é registrado e o atendimento vai para supervisão, salvo quando a política permitir pedir esclarecimento.
+7. Resposta bloqueada não é enviada e nunca é regenerada. O motivo é registrado e o atendimento aguarda a supervisão, salvo quando a política permitir pedir esclarecimento.
 8. O chatbot não inventa preços, horários, disponibilidade, condições, propostas ou compromissos. Afirmações factuais específicas exigem fonte autorizada.
 9. O chatbot não responde sobre assuntos fora do escopo autorizado.
 10. Dados de empresas (tenants) permanecem isolados entre si, e informações de um cliente não são expostas a outro, inclusive dentro da mesma empresa.

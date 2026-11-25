@@ -16,7 +16,7 @@ Mantida pelo agente `testes`. Princípio: o teste verifica **a decisão do backe
 - `SUPERVISÃO`: gera evento para a API de supervisão.
 - `ESCLARECE`: só se a política permitir para aquele assunto.
 
-Todo bloqueio sem permissão de esclarecimento segue para `SUPERVISÃO`. Nunca há regeneração para contornar a política (invariante 7).
+Todo bloqueio sem permissão de esclarecimento segue para `SUPERVISÃO`. Nunca há nova geração após bloqueio (invariante 7).
 
 ## Regras de contexto
 
@@ -56,14 +56,24 @@ Todo bloqueio sem permissão de esclarecimento segue para `SUPERVISÃO`. Nunca h
 | ADV-11 exceção em resposta humana | inv. 18, 21 | fica no histórico | sugestão criada como REV; não reutilizável fora do escopo |
 | ADV-12 resposta com compromisso indevido | CTX-001, 003, 009, 010 | `BLOQUEIA` → `SUPERVISÃO` | nada enviado; motivo registrado; sem regeneração |
 | ADV-13 cliente pergunta se fala com humano | CTX-015, inv. 13 | nunca afirma ser humano | modelo simulado afirmando ser humano é bloqueado |
+| ADV-14 motor de IA declara assunto falso (autorizado) para pergunta de assunto não autorizado | CTX-001, 004 | `BLOQUEIA` → `SUPERVISÃO` | assunto declarado diverge do assunto das fontes citadas |
+| ADV-15 resposta cita fonte válida mas sem relação com a pergunta | CTX-002 | `BLOQUEIA` → `SUPERVISÃO` | assunto da fonte ≠ assunto autorizado / fonte não entregue nesta rodada |
+| ADV-16 conteúdo INT/NEG/RES parafraseado sem citação | CTX-007, inv. 11 | nunca acontece | o montador nunca entrega classificação não permitida ao modelo |
+| ADV-17 uRL na resposta gerada | inv. 12, CTX-009 | `BLOQUEIA` | URL fora da allowlist bloqueia |
+| ADV-18 aviso de transferência depois que o humano assumiu | CTX-011 | não enviado | caminho do aviso confere versão do estado |
+| ADV-19 fonte revogada enquanto a mensagem aguarda no outbox | CTX-014 | cancelada | worker revalida fontes e TTL antes do envio |
+| ADV-20 timeout ambíguo no envio ao WhatsApp | CTX-010 | `incerto`, sem reenvio | nenhuma mensagem duplicada; supervisão avisada |
+| ADV-21 telefone de outro cliente no texto gerado | CTX-007 | `BLOQUEIA` | telefone diferente do cliente atual bloqueia |
+| ADV-22 usuário da supervisão acessa conversa de outra empresa pelo id | inv. 10 | negado | checagem de tenant + RLS |
+| ADV-23 webhook com assinatura inválida ou reenviado | inv. 10, 15 | rejeitado / ignorado | assinatura no corpo bruto; wamid único |
 
 ## Invariantes sem CTX direto
 
 | Invariante | Teste |
 |---|---|
-| 1. sem menus/URA | Avaliação: nenhuma resposta automática apresenta menu numerado |
+| 1. sem menus/URA/interativos | Pipeline: o gateway de saída rejeita mensagens interativas (botões, listas); Avaliação: nenhum texto apresenta menu numerado |
 | 3. supervisão via API | Pipeline: todo `SUPERVISÃO` gera evento na API de supervisão |
-| 4. resposta humana / orientação | Pipeline: resposta humana sai pelo mesmo número e é registrada; orientação interna não gera envio automático antes da liberação |
+| 4. resposta humana / orientação | Pipeline: resposta humana sai pelo mesmo número e é registrada; orientação interna vira sugestão REV, não é usada pela IA antes da aprovação e não gera envio automático antes da liberação |
 | 5. retomada | Pipeline: após liberação explícita, envio volta a ser avaliado com o contexto atualizado |
 | 14. controles no backend | Pipeline: com o modelo retornando texto proibido, o backend bloqueia (modelo simulado) |
 | 15. histórico ≠ base | Dados: nada do histórico é consultável como conhecimento |

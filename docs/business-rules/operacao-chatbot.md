@@ -36,7 +36,11 @@ Origem: consolida as duas especificações do Victor de 2026-11-24 ("Fluxo conve
 9. Durante o controle humano, a IA não envia mensagens automáticas, nem mesmo após receber orientação interna.
 10. Após liberação explícita do humano, a IA retoma o atendimento com o contexto atualizado.
 
-A conversa é natural e fluida, sem menus ou URA, mas com limites rigorosos de conhecimento e autorização.
+A conversa é natural e fluida, como com um humano: sem menus, sem URA e sem elementos interativos (botões, listas de opções) nas mensagens ao cliente, mas com limites rigorosos de conhecimento e autorização.
+
+### Orientação interna
+
+A orientação interna pode conter informação específica. Por isso ela não vira fonte da IA diretamente: entra como sugestão de conhecimento (status REV) e passa por avaliação e classificação humana (`governanca-conhecimento.md`). Só depois de aprovada, com escopo definido (que pode ser apenas aquele atendimento), a IA pode usá-la.
 
 ### Transferência
 
@@ -63,7 +67,7 @@ Se a validação falhar:
 1. A mensagem **não** é enviada.
 2. O motivo é registrado no histórico.
 3. O atendimento é encaminhado para supervisão, salvo quando a política permitir expressamente pedir esclarecimento ao cliente.
-4. **Não** se tenta contornar a política com outra geração indiscriminada.
+4. **Nunca** há nova geração após um bloqueio. A IA aguarda a resposta da supervisão.
 
 Controles determinísticos sempre que possível. Uma segunda chamada ao modelo pode complementar, nunca substituir.
 

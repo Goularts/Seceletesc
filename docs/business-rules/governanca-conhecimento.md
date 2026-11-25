@@ -12,7 +12,7 @@ Resumo numerado em `invariants.md`. Comportamento em atendimento: `operacao-chat
 
 ## 2. Ciclo de vida
 
-1. A IA analisa intervenções humanas e **sugere** conhecimentos, classificações, correções ou atualizações.
+1. A IA analisa intervenções humanas e **sugere** conhecimentos, classificações, correções ou atualizações. Orientações internas dadas à IA também entram como sugestão.
 2. A sugestão entra com status **REV** (pendente de revisão) e não pode ser usada pelo chatbot.
 3. Um humano autorizado **aprova, edita, rejeita, restringe ou revoga**.
 4. Só conhecimento aprovado, vigente e dentro do escopo é usado em atendimento.
