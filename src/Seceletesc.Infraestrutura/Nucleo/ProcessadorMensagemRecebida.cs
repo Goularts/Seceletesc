@@ -13,10 +13,10 @@ public sealed record MensagemRecebida(Guid TenantId, string WaIdCliente, string 
 
 public enum ResultadoProcessamento
 {
-    /// <summary>Mesmo wamid já processado (reenvio do webhook).</summary>
+    /// <summary>Mesmo wamid já processado (reenvio do webhook), ou a mensagem já foi tratada.</summary>
     Duplicada,
 
-    /// <summary>Conversa não está em modo automático, ou mensagem anterior à liberação: a IA não age.</summary>
+    /// <summary>Conversa não está em modo automático, mensagem anterior à liberação, ou há mensagem mais nova: a IA não age.</summary>
     SemAcaoDaIa,
 
     /// <summary>Resposta aprovada pelo validador e colocada na fila de envio.</summary>
@@ -24,25 +24,56 @@ public enum ResultadoProcessamento
 
     /// <summary>Resposta bloqueada (ou impossível): automação interrompida, supervisão acionada.</summary>
     Transferida,
+
+    /// <summary>Mensagem registrada e na fila da IA (o trabalhador da IA trata depois).</summary>
+    Registrada,
 }
 
 /// <summary>
-/// Orquestra uma mensagem recebida (operacao-chatbot.md, seção 2; plano técnico, seção 4):
-/// mascara e cifra dados protegidos, grava, monta o contexto mínimo, pede o rascunho ao motor de IA
-/// FORA de qualquer transação, valida no backend sobre o estado ATUAL e só então enfileira o envio.
+/// Orquestra uma mensagem recebida (operacao-chatbot.md, seção 2; plano técnico, seções 4 e 4.8), em duas etapas:
+/// <list type="number">
+/// <item><see cref="RegistrarAsync"/> (no webhook): mascara e cifra dados protegidos, grava a mensagem (idempotente pelo
+/// wamid) e, se a IA pode agir, põe na fila da IA. Rápido e durável.</item>
+/// <item><see cref="TratarAsync"/> (no trabalhador da IA): monta o contexto mínimo, pede o rascunho ao motor de IA FORA
+/// de qualquer transação, valida no backend sobre o estado ATUAL e só então enfileira o envio. A decisão sai uma única
+/// vez: quem tira a mensagem da fila na transação da decisão decide.</item>
+/// </list>
 /// Bloqueio nunca gera nova tentativa: a conversa vai para supervisão (invariante 7).
 /// </summary>
 public sealed class ProcessadorMensagemRecebida(
     NpgsqlDataSource dataSourceApp,
     IMotorIA motor,
     CifradorDadosProtegidos cifrador,
-    TimeProvider relogio)
+    TimeProvider relogio,
+    bool iaHabilitada = true,
+    TimeSpan? idadeMaximaNaFila = null)
 {
     public const int LimiteHistorico = 20;
 
+    /// <summary>Tentativas de tratamento (lease vencido, erro) antes de desistir e acionar a supervisão.</summary>
+    public const int MaximoTentativas = 3;
+
+    /// <summary>Padrão: mensagem parada na fila há mais tempo que isso não é respondida pela IA; vai para supervisão.</summary>
+    public static readonly TimeSpan IdadeMaximaNaFilaPadrao = TimeSpan.FromMinutes(15);
+
+    private readonly TimeSpan _idadeMaximaNaFila = idadeMaximaNaFila ?? IdadeMaximaNaFilaPadrao;
+
+    /// <summary>Tempo máximo do motor de IA, abaixo do lease da fila (120 s).</summary>
+    public static readonly TimeSpan TempoMaximoMotor = TimeSpan.FromSeconds(60);
+
     private readonly ExecutorTenant _executor = new(dataSourceApp);
 
+    /// <summary>Registra e trata em seguida (uso direto, testes). O webhook usa só <see cref="RegistrarAsync"/>.</summary>
     public async Task<ResultadoProcessamento> ProcessarAsync(MensagemRecebida msg, CancellationToken ct = default)
+    {
+        var (resultado, mensagemId) = await RegistrarAsync(msg, ct).ConfigureAwait(false);
+        return resultado == ResultadoProcessamento.Registrada
+            ? await TratarAsync(msg.TenantId, mensagemId!.Value, ct).ConfigureAwait(false)
+            : resultado;
+    }
+
+    /// <summary>Etapa 1: grava a mensagem do cliente e, se a IA pode agir, põe na fila da IA.</summary>
+    public async Task<(ResultadoProcessamento Resultado, Guid? MensagemId)> RegistrarAsync(MensagemRecebida msg, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(msg);
 
@@ -62,8 +93,7 @@ public sealed class ProcessadorMensagemRecebida(
                 [new OcorrenciaDadoProtegido(CategoriaDadoProtegido.Documento, 0, msg.Texto.Length, msg.Texto)]);
         }
 
-        // ---------- Transação 1: gravar e montar o contexto
-        var preparo = await _executor.ExecutarAsync(msg.TenantId, async (c, tx, t) =>
+        return await _executor.ExecutarAsync(msg.TenantId, async (c, tx, t) =>
         {
             var cliente = await RepositorioNucleo.ObterOuCriarClienteAsync(c, tx, msg.TenantId, msg.WaIdCliente, t).ConfigureAwait(false);
             var conversa = await RepositorioNucleo.ObterOuCriarConversaComTravaAsync(c, tx, msg.TenantId, cliente.Id, t).ConfigureAwait(false);
@@ -71,35 +101,86 @@ public sealed class ProcessadorMensagemRecebida(
             var mensagemId = Guid.NewGuid();
             if (!await RepositorioNucleo.InserirMensagemAsync(c, tx, mensagemId, msg.TenantId, conversa.Id, "entrada", mascarado.Texto, msg.Wamid, msg.RecebidaEm, t).ConfigureAwait(false))
             {
-                return Preparo.Duplicada;
+                return (ResultadoProcessamento.Duplicada, (Guid?)null);
             }
 
-            foreach (var o in mascarado.Ocorrencias)
-            {
-                var dadoId = Guid.NewGuid();
-                var categoria = o.Categoria.ToString();
-                var dado = cifrador.Cifrar(o.Valor, new ContextoCifragem(msg.TenantId, dadoId, conversa.Id, mensagemId, categoria));
-                await RepositorioNucleo.InserirDadoProtegidoAsync(c, tx, dadoId, msg.TenantId, conversa.Id, mensagemId, categoria, dado, t).ConfigureAwait(false);
-            }
+            await CifrarAsync(c, tx, msg.TenantId, conversa.Id, mensagemId, mascarado, t).ConfigureAwait(false);
 
             conversa.RegistrarMensagemDoCliente(msg.RecebidaEm);
+            await RepositorioNucleo.SalvarConversaAsync(c, tx, conversa, t).ConfigureAwait(false);
             await RepositorioNucleo.InserirEventoAsync(c, tx, msg.TenantId, conversa.Id, "mensagem_recebida",
                 new { mensagem = mensagemId, dados_protegidos = mascarado.Ocorrencias.Select(o => o.Categoria.ToString()) }, t).ConfigureAwait(false);
 
             if (!conversa.IaPodeTratarMensagemRecebidaEm(msg.RecebidaEm))
             {
-                await RepositorioNucleo.SalvarConversaAsync(c, tx, conversa, t).ConfigureAwait(false);
+                return (ResultadoProcessamento.SemAcaoDaIa, (Guid?)null);
+            }
+
+            // Processamento da IA desligado: ninguém responderia. A mensagem vai para um humano já (revisão da F4, S4).
+            if (!iaHabilitada)
+            {
+                var politicaAtual = await RepositorioNucleo.ObterPoliticaVigenteAsync(c, tx, msg.TenantId, t).ConfigureAwait(false);
+                await TransferirAsync(c, tx, conversa, politicaAtual, "processamento_da_ia_desligado", t).ConfigureAwait(false);
+                return (ResultadoProcessamento.Transferida, (Guid?)null);
+            }
+
+            await using (var fila = RepositorioNucleo.Cmd(c, tx, """
+                insert into fila_ia (mensagem_id, tenant_id, conversa_id, deteccao_falhou) values (@m, @t, @c, @d)
+                """))
+            {
+                fila.Parameters.AddWithValue("m", mensagemId);
+                fila.Parameters.AddWithValue("t", msg.TenantId);
+                fila.Parameters.AddWithValue("c", conversa.Id);
+                fila.Parameters.AddWithValue("d", deteccaoFalhou);
+                await fila.ExecuteNonQueryAsync(t).ConfigureAwait(false);
+            }
+
+            return (ResultadoProcessamento.Registrada, (Guid?)mensagemId);
+        }, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Etapa 2: trata uma mensagem da fila da IA. Seguro para repetir (queda no meio, lease vencido): sem a linha na fila,
+    /// não decide de novo. Só a mensagem mais recente da conversa é respondida; as anteriores saem da fila sem resposta
+    /// (a mais nova é tratada com o histórico completo).
+    /// </summary>
+    public async Task<ResultadoProcessamento> TratarAsync(Guid tenantId, Guid mensagemId, CancellationToken ct = default)
+    {
+        // ---------- Transação 1: conferir e montar o contexto
+        var preparo = await _executor.ExecutarAsync(tenantId, async (c, tx, t) =>
+        {
+            var item = await ItemDaFilaAsync(c, tx, mensagemId, t).ConfigureAwait(false);
+            if (item is null)
+            {
+                return Preparo.JaTratada;
+            }
+
+            var conversa = (await RepositorioNucleo.ObterConversaComTravaAsync(c, tx, item.Value.ConversaId, t).ConfigureAwait(false))!;
+            if (!conversa.IaPodeTratarMensagemRecebidaEm(item.Value.RecebidaEm))
+            {
+                await TirarDaFilaAsync(c, tx, mensagemId, t).ConfigureAwait(false);
                 return Preparo.SemAcao;
             }
 
-            var politica = await RepositorioNucleo.ObterPoliticaVigenteAsync(c, tx, msg.TenantId, t).ConfigureAwait(false);
-            if (deteccaoFalhou || politica is null)
+            var politica = await RepositorioNucleo.ObterPoliticaVigenteAsync(c, tx, tenantId, t).ConfigureAwait(false);
+            if (await TratarMensagemMaisNovaAsync(c, tx, conversa, politica, mensagemId, t).ConfigureAwait(false) is { } desfecho)
             {
-                await TransferirAsync(c, tx, conversa, politica, deteccaoFalhou ? "deteccao_dados_protegidos_indisponivel" : "politica_ausente", t).ConfigureAwait(false);
-                return Preparo.Transferida;
+                return desfecho == ResultadoProcessamento.Transferida ? Preparo.Transferida : Preparo.SemAcao;
             }
 
-            await RepositorioNucleo.SalvarConversaAsync(c, tx, conversa, t).ConfigureAwait(false);
+            // Sem resposta automática: falha de detecção, sem política, tentativas esgotadas ou mensagem velha demais na
+            // fila (resposta atrasada não é resposta pertinente). Tudo vai para um humano (revisão da F4, S4 e S5).
+            var motivo = item.Value.DeteccaoFalhou ? "deteccao_dados_protegidos_indisponivel"
+                : politica is null ? "politica_ausente"
+                : item.Value.Tentativas > MaximoTentativas ? "tentativas_esgotadas"
+                : relogio.GetUtcNow() - item.Value.RecebidaEm > _idadeMaximaNaFila ? "mensagem_antiga_na_fila"
+                : null;
+            if (motivo is not null || politica is null)
+            {
+                await TirarDaFilaAsync(c, tx, mensagemId, t).ConfigureAwait(false);
+                await TransferirAsync(c, tx, conversa, politica, motivo ?? "politica_ausente", t).ConfigureAwait(false);
+                return Preparo.Transferida;
+            }
 
             var agora = relogio.GetUtcNow();
             var elegiveis = (await RepositorioNucleo.ListarFontesCandidatasAsync(c, tx, conversa, t).ConfigureAwait(false))
@@ -112,10 +193,10 @@ public sealed class ProcessadorMensagemRecebida(
                 elegiveis.Select(f => new ConhecimentoContexto(f.ItemId, f.Versao, f.Assunto, f.Conteudo)).ToList(),
                 [.. politica.AssuntosAutonomos]);
 
-            return new Preparo(conversa.Id, conversa.VersaoEstado, contexto, elegiveis.Select(f => f.Chave).ToHashSet());
+            return new Preparo(conversa.Id, conversa.VersaoEstado, contexto, elegiveis.Select(f => f.Chave).ToHashSet(), politica);
         }, ct).ConfigureAwait(false);
 
-        if (preparo == Preparo.Duplicada)
+        if (preparo == Preparo.JaTratada)
         {
             return ResultadoProcessamento.Duplicada;
         }
@@ -134,7 +215,9 @@ public sealed class ProcessadorMensagemRecebida(
         string? rascunhoJson;
         try
         {
-            rascunhoJson = await motor.GerarRascunhoAsync(preparo.Contexto!, ct).ConfigureAwait(false);
+            using var limite = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            limite.CancelAfter(TempoMaximoMotor);
+            rascunhoJson = await motor.GerarRascunhoAsync(preparo.Contexto!, limite.Token).ConfigureAwait(false);
         }
 #pragma warning disable CA1031 // Falha fechada: qualquer erro do motor é tratado como bloqueio.
         catch (Exception) when (!ct.IsCancellationRequested)
@@ -144,10 +227,24 @@ public sealed class ProcessadorMensagemRecebida(
         }
 
         // ---------- Transação 2: validar sobre o estado ATUAL e decidir
-        return await _executor.ExecutarAsync(msg.TenantId, async (c, tx, t) =>
+        return await _executor.ExecutarAsync(tenantId, async (c, tx, t) =>
         {
             var conversa = (await RepositorioNucleo.ObterConversaComTravaAsync(c, tx, preparo.ConversaId, t).ConfigureAwait(false))!;
-            var politica = (await RepositorioNucleo.ObterPoliticaVigenteAsync(c, tx, msg.TenantId, t).ConfigureAwait(false))!;
+
+            // Exatamente uma decisão: quem tira da fila decide. Outra execução (lease vencido) já decidiu.
+            if (!await TirarDaFilaAsync(c, tx, mensagemId, t).ConfigureAwait(false))
+            {
+                return ResultadoProcessamento.Duplicada;
+            }
+
+            // Chegou mensagem mais nova durante a geração.
+            var politicaAtual = await RepositorioNucleo.ObterPoliticaVigenteAsync(c, tx, tenantId, t).ConfigureAwait(false);
+            if (await TratarMensagemMaisNovaAsync(c, tx, conversa, politicaAtual, mensagemId, t, jaFoiTiradaDaFila: true).ConfigureAwait(false) is { } desfecho)
+            {
+                return desfecho;
+            }
+
+            var politica = politicaAtual ?? preparo.Politica!;
             var rascunho = LeitorRascunho.TentarLer(rascunhoJson, out _);
             var citadas = rascunho?.Fontes ?? [];
             var fontesNoBanco = await RepositorioNucleo.ObterFontesAsync(c, tx, citadas.Distinct().ToList(), t).ConfigureAwait(false);
@@ -157,18 +254,18 @@ public sealed class ProcessadorMensagemRecebida(
                 conversa, preparo.VersaoLida, politica, preparo.Entregues!, fontesNoBanco, agora));
 
             var decisaoId = Guid.NewGuid();
-            await RepositorioNucleo.InserirDecisaoAsync(c, tx, decisaoId, msg.TenantId, conversa.Id, conversa.VersaoEstado, "resposta",
+            await RepositorioNucleo.InserirDecisaoAsync(c, tx, decisaoId, tenantId, conversa.Id, conversa.VersaoEstado, "resposta",
                 resultado.Aprovado, resultado.Motivo?.ToString(), resultado.Detalhe, politica.Versao, preparo.Entregues!, citadas,
                 resultado.Aprovado ? rascunho!.Texto : null, t).ConfigureAwait(false);
 
             if (resultado.Aprovado)
             {
-                await RepositorioNucleo.InserirOutboxAsync(c, tx, msg.TenantId, conversa.Id, decisaoId, rascunho!.Texto, agora + politica.ValidadeMensagemAutomatica, t).ConfigureAwait(false);
-                await RepositorioNucleo.InserirEventoAsync(c, tx, msg.TenantId, conversa.Id, "resposta_aprovada", new { decisao = decisaoId }, t).ConfigureAwait(false);
+                await RepositorioNucleo.InserirOutboxAsync(c, tx, tenantId, conversa.Id, decisaoId, rascunho!.Texto, agora + politica.ValidadeMensagemAutomatica, t).ConfigureAwait(false);
+                await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, conversa.Id, "resposta_aprovada", new { decisao = decisaoId }, t).ConfigureAwait(false);
                 return ResultadoProcessamento.RespostaEnfileirada;
             }
 
-            await RepositorioNucleo.InserirEventoAsync(c, tx, msg.TenantId, conversa.Id, "resposta_bloqueada",
+            await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, conversa.Id, "resposta_bloqueada",
                 new { decisao = decisaoId, motivo = resultado.Motivo?.ToString() }, t).ConfigureAwait(false);
 
             // Bloqueio por estado mudado: um humano interveio durante a geração. Se assumiu, a conversa já é dele;
@@ -181,6 +278,210 @@ public sealed class ProcessadorMensagemRecebida(
 
             return ResultadoProcessamento.Transferida;
         }, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Mensagem que não é texto (mídia, áudio, localização, reação...). Padrão do plano (lacuna funcional): a IA não
+    /// trata; a mensagem fica registrada (só o tipo, nunca o conteúdo) e a conversa vai para supervisão.
+    /// </summary>
+    public Task<ResultadoProcessamento> RegistrarNaoTextoAsync(Guid tenantId, string waIdCliente, string tipo, string wamid, DateTimeOffset recebidaEm, CancellationToken ct = default) =>
+        _executor.ExecutarAsync(tenantId, async (c, tx, t) =>
+        {
+            var cliente = await RepositorioNucleo.ObterOuCriarClienteAsync(c, tx, tenantId, waIdCliente, t).ConfigureAwait(false);
+            var conversa = await RepositorioNucleo.ObterOuCriarConversaComTravaAsync(c, tx, tenantId, cliente.Id, t).ConfigureAwait(false);
+            var mensagemId = Guid.NewGuid();
+            var tipoSeguro = TipoSeguro(tipo);
+            if (!await RepositorioNucleo.InserirMensagemAsync(c, tx, mensagemId, tenantId, conversa.Id, "entrada", $"[mensagem não textual: {tipoSeguro}]", wamid, recebidaEm, t).ConfigureAwait(false))
+            {
+                return ResultadoProcessamento.Duplicada;
+            }
+
+            conversa.RegistrarMensagemDoCliente(recebidaEm);
+            await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, conversa.Id, "mensagem_recebida", new { mensagem = mensagemId, tipo = tipoSeguro }, t).ConfigureAwait(false);
+            if (conversa.Estado != Dominio.Conversas.EstadoConversa.Automatico)
+            {
+                await RepositorioNucleo.SalvarConversaAsync(c, tx, conversa, t).ConfigureAwait(false);
+                return ResultadoProcessamento.SemAcaoDaIa;
+            }
+
+            var politica = await RepositorioNucleo.ObterPoliticaVigenteAsync(c, tx, tenantId, t).ConfigureAwait(false);
+            await TransferirAsync(c, tx, conversa, politica, "mensagem_nao_textual:" + tipoSeguro, t).ConfigureAwait(false);
+            return ResultadoProcessamento.Transferida;
+        }, ct);
+
+    /// <summary>
+    /// Eco do WhatsApp Business App (coexistência): um humano respondeu pelo celular. Registra no histórico (mascarado
+    /// e cifrado) e coloca a conversa sob controle humano (invariante 24). Não mexe na janela de 24h.
+    /// </summary>
+    public Task<ResultadoProcessamento> RegistrarEcoAsync(Guid tenantId, string waIdCliente, string? texto, string tipo, string wamid, DateTimeOffset enviadaEm, CancellationToken ct = default) =>
+        _executor.ExecutarAsync(tenantId, async (c, tx, t) =>
+        {
+            var cliente = await RepositorioNucleo.ObterOuCriarClienteAsync(c, tx, tenantId, waIdCliente, t).ConfigureAwait(false);
+            var conversa = await RepositorioNucleo.ObterOuCriarConversaComTravaAsync(c, tx, tenantId, cliente.Id, t).ConfigureAwait(false);
+            var mascarado = texto is null
+                ? new TextoMascarado($"[mensagem não textual pelo app: {TipoSeguro(tipo)}]", [])
+                : MascararComFalhaFechada(texto);
+            var mensagemId = Guid.NewGuid();
+            if (!await RepositorioNucleo.InserirMensagemAsync(c, tx, mensagemId, tenantId, conversa.Id, "saida_app", mascarado.Texto, wamid, enviadaEm, t).ConfigureAwait(false))
+            {
+                return ResultadoProcessamento.Duplicada;
+            }
+
+            await CifrarAsync(c, tx, tenantId, conversa.Id, mensagemId, mascarado, t).ConfigureAwait(false);
+            await using (var eco = RepositorioNucleo.Cmd(c, tx, "select registrar_eco_humano(@c, @w)"))
+            {
+                eco.Parameters.AddWithValue("c", conversa.Id);
+                eco.Parameters.AddWithValue("w", wamid);
+                await eco.ExecuteScalarAsync(t).ConfigureAwait(false);
+            }
+
+            return ResultadoProcessamento.SemAcaoDaIa;
+        }, ct);
+
+    /// <summary>
+    /// Status de entrega de uma mensagem enviada (idempotente). Falha de entrega de uma mensagem nossa aciona a
+    /// supervisão: o cliente não recebeu e alguém precisa saber.
+    /// </summary>
+    public Task<bool> RegistrarStatusAsync(Guid tenantId, string wamid, string status, DateTimeOffset em, string? erroCodigo, CancellationToken ct = default) =>
+        _executor.ExecutarAsync(tenantId, async (c, tx, t) =>
+        {
+            await using (var cmd = RepositorioNucleo.Cmd(c, tx, """
+                insert into status_entrega (tenant_id, wamid, status, ocorrido_em, erro_codigo) values (@t, @w, @s, @em, @e)
+                on conflict do nothing
+                """))
+            {
+                cmd.Parameters.AddWithValue("t", tenantId);
+                cmd.Parameters.AddWithValue("w", wamid);
+                cmd.Parameters.AddWithValue("s", status);
+                cmd.Parameters.AddWithValue("em", em);
+                cmd.Parameters.AddWithValue("e", (object?)erroCodigo ?? DBNull.Value);
+                if (await cmd.ExecuteNonQueryAsync(t).ConfigureAwait(false) == 0)
+                {
+                    return false; // repetido
+                }
+            }
+
+            if (status != "failed")
+            {
+                return true;
+            }
+
+            await using var conv = RepositorioNucleo.Cmd(c, tx, "select conversa_id from outbox where wamid = @w limit 1");
+            conv.Parameters.AddWithValue("w", wamid);
+            if (await conv.ExecuteScalarAsync(t).ConfigureAwait(false) is Guid conversaId)
+            {
+                await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, conversaId, "entrega_falhou", new { wamid, erro = erroCodigo }, t).ConfigureAwait(false);
+                await using var transferir = RepositorioNucleo.Cmd(c, tx, "select transferir_para_supervisao(@c, 'falha_entrega')");
+                transferir.Parameters.AddWithValue("c", conversaId);
+                await transferir.ExecuteScalarAsync(t).ConfigureAwait(false);
+            }
+
+            return true;
+        }, ct);
+
+    /// <summary>Tipo vindo do webhook vai para o histórico só se for um identificador simples.</summary>
+    private static string TipoSeguro(string tipo) =>
+        tipo.Length is > 0 and <= 30 && tipo.All(ch => ch is (>= 'a' and <= 'z') or '_') ? tipo : "desconhecido";
+
+    private static TextoMascarado MascararComFalhaFechada(string texto)
+    {
+        try
+        {
+            return DetectorDadosProtegidos.Mascarar(texto);
+        }
+        catch (Exception e) when (e is System.Text.RegularExpressions.RegexMatchTimeoutException or PlatformNotSupportedException)
+        {
+            return new TextoMascarado("[CONTEÚDO RETIDO: verificação de dados protegidos indisponível]",
+                [new OcorrenciaDadoProtegido(CategoriaDadoProtegido.Documento, 0, texto.Length, texto)]);
+        }
+    }
+
+    private async Task CifrarAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid tenantId, Guid conversaId, Guid mensagemId, TextoMascarado mascarado, CancellationToken ct)
+    {
+        foreach (var o in mascarado.Ocorrencias)
+        {
+            var dadoId = Guid.NewGuid();
+            var categoria = o.Categoria.ToString();
+            var dado = cifrador.Cifrar(o.Valor, new ContextoCifragem(tenantId, dadoId, conversaId, mensagemId, categoria));
+            await RepositorioNucleo.InserirDadoProtegidoAsync(c, tx, dadoId, tenantId, conversaId, mensagemId, categoria, dado, ct).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<(Guid ConversaId, bool DeteccaoFalhou, DateTimeOffset RecebidaEm, int Tentativas)?> ItemDaFilaAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid mensagemId, CancellationToken ct)
+    {
+        await using var cmd = RepositorioNucleo.Cmd(c, tx, """
+            select f.conversa_id, f.deteccao_falhou, m.ocorrida_em, f.tentativas
+              from fila_ia f join mensagens m on m.id = f.mensagem_id and m.tenant_id = f.tenant_id
+             where f.mensagem_id = @m and f.tenant_id = tenant_atual()
+            """);
+        cmd.Parameters.AddWithValue("m", mensagemId);
+        await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        return await r.ReadAsync(ct).ConfigureAwait(false)
+            ? (r.GetGuid(0), r.GetBoolean(1), r.GetFieldValue<DateTimeOffset>(2), r.GetInt32(3))
+            : null;
+    }
+
+    private static async Task<bool> TirarDaFilaAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid mensagemId, CancellationToken ct)
+    {
+        await using var cmd = RepositorioNucleo.Cmd(c, tx, "delete from fila_ia where mensagem_id = @m and tenant_id = tenant_atual()");
+        cmd.Parameters.AddWithValue("m", mensagemId);
+        return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1;
+    }
+
+    /// <summary>
+    /// Há mensagem do cliente mais nova que esta? Nenhuma mensagem sai do fluxo em silêncio (revisão da F4, G1):
+    /// <list type="bullet">
+    /// <item>se a mais nova ainda está na fila, esta é agrupada a ela (a resposta à mais nova é gerada com esta no
+    /// histórico e passa pela validação); fica registrado no histórico;</item>
+    /// <item>se a mais nova já foi tratada (chegada fora de ordem), esta nunca foi considerada numa resposta: vai para
+    /// a supervisão.</item>
+    /// </list>
+    /// Nulo se não há mensagem mais nova. Agrupar mensagens seguidas é detalhamento técnico a confirmar pelo Victor.
+    /// </summary>
+    private async Task<ResultadoProcessamento?> TratarMensagemMaisNovaAsync(
+        NpgsqlConnection c, NpgsqlTransaction tx, Dominio.Conversas.Conversa conversa, Dominio.Politicas.PoliticaTenant? politica, Guid mensagemId,
+        CancellationToken ct, bool jaFoiTiradaDaFila = false)
+    {
+        Guid? maisNova = null;
+        var pendente = false;
+        await using (var cmd = RepositorioNucleo.Cmd(c, tx, """
+            select n.id, exists (select 1 from fila_ia f where f.mensagem_id = n.id)
+              from mensagens n join mensagens m on m.id = @m
+             where n.conversa_id = @c and n.direcao = 'entrada' and n.id <> m.id
+               and (n.ocorrida_em, n.criada_em) > (m.ocorrida_em, m.criada_em)
+             order by n.ocorrida_em desc, n.criada_em desc limit 1
+            """))
+        {
+            cmd.Parameters.AddWithValue("c", conversa.Id);
+            cmd.Parameters.AddWithValue("m", mensagemId);
+            await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            if (await r.ReadAsync(ct).ConfigureAwait(false))
+            {
+                maisNova = r.GetGuid(0);
+                pendente = r.GetBoolean(1);
+            }
+        }
+
+        if (maisNova is null)
+        {
+            return null;
+        }
+
+        if (!jaFoiTiradaDaFila)
+        {
+            await TirarDaFilaAsync(c, tx, mensagemId, ct).ConfigureAwait(false);
+        }
+
+        if (pendente)
+        {
+            await RepositorioNucleo.InserirEventoAsync(c, tx, conversa.TenantId, conversa.Id, "mensagem_agrupada",
+                new { mensagem = mensagemId, respondida_com = maisNova }, ct).ConfigureAwait(false);
+            await RepositorioNucleo.SalvarConversaAsync(c, tx, conversa, ct).ConfigureAwait(false);
+            return ResultadoProcessamento.SemAcaoDaIa;
+        }
+
+        await TransferirAsync(c, tx, conversa, politica, "mensagem_fora_de_ordem", ct).ConfigureAwait(false);
+        return ResultadoProcessamento.Transferida;
     }
 
     /// <summary>Interrompe a automação (Automatico → TransferenciaPendente) e enfileira o aviso fixo, se houver.</summary>
@@ -214,9 +515,9 @@ public sealed class ProcessadorMensagemRecebida(
         }
     }
 
-    private sealed record Preparo(Guid ConversaId, long VersaoLida, ContextoModelo? Contexto, IReadOnlySet<ChaveFonte>? Entregues)
+    private sealed record Preparo(Guid ConversaId, long VersaoLida, ContextoModelo? Contexto, IReadOnlySet<ChaveFonte>? Entregues, Dominio.Politicas.PoliticaTenant? Politica = null)
     {
-        public static readonly Preparo Duplicada = new(Guid.Empty, -1, null, null);
+        public static readonly Preparo JaTratada = new(Guid.Empty, -1, null, null);
         public static readonly Preparo SemAcao = new(Guid.Empty, -2, null, null);
         public static readonly Preparo Transferida = new(Guid.Empty, -3, null, null);
     }

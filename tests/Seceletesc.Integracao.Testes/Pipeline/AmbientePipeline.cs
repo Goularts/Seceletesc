@@ -49,7 +49,7 @@ internal sealed class GatewayFalso : IGatewayWhatsApp
 
     public List<(string WaId, string Texto)> Enviadas { get; } = [];
 
-    public Task<ResultadoEnvio> EnviarTextoAsync(string waIdDestino, string texto, CancellationToken ct)
+    public Task<ResultadoEnvio> EnviarTextoAsync(Guid tenantId, string waIdDestino, string texto, CancellationToken ct)
     {
         var r = Respostas.Count > 0 ? Respostas.Dequeue()() : new ResultadoEnvio(SituacaoEnvio.Enviada, "wamid.saida." + Guid.NewGuid(), null);
         if (r.Situacao is SituacaoEnvio.Enviada or SituacaoEnvio.Incerta)
@@ -147,6 +147,8 @@ internal sealed class AmbientePipeline : IAsyncDisposable
 
     public static string ChavePrivadaPem => ChavesRsa.Value.Privada;
 
+    public static string ChavePublicaPem => ChavesRsa.Value.Publica;
+
     public static async Task<AmbientePipeline> CriarAsync(BancoFixture banco, Action<PoliticaTenantBuilder>? ajustePolitica = null)
     {
         var tenantId = Guid.NewGuid();
@@ -169,6 +171,7 @@ internal sealed class AmbientePipeline : IAsyncDisposable
         // itens deixados por testes anteriores ficam indisponíveis.
         await using (var cmd = new NpgsqlCommand("""
             update fila_envio set disponivel_em = now() + interval '100 years';
+            update fila_ia set disponivel_em = now() + interval '100 years';
             insert into tenants (id, nome) values (@t, 'Empresa de teste');
             """, c))
         {
@@ -200,7 +203,8 @@ internal sealed class AmbientePipeline : IAsyncDisposable
     /// <summary>Cifrador com a chave pública de teste (o mesmo do pipeline e do worker).</summary>
     public CifradorDadosProtegidos Cifrador => _cifrador;
 
-    public ProcessadorMensagemRecebida Orquestrador(IMotorIA motor) => new(App, motor, _cifrador, Relogio);
+    public ProcessadorMensagemRecebida Orquestrador(IMotorIA motor, TimeSpan? idadeMaximaNaFila = null) =>
+        new(App, motor, _cifrador, Relogio, idadeMaximaNaFila: idadeMaximaNaFila);
 
     public ProcessadorEnvio Worker() => new(WorkerDs, Gateway, Relogio, _cifrador);
 

@@ -56,6 +56,11 @@ public static class EndpointsSupervisao
         // Fora do desenvolvimento não há como desligar (revisão pós-F3, S9); em desenvolvimento, dá para ligar.
         var exigirHttps = !app.Environment.IsDevelopment() || app.Configuration.GetValue("Seguranca:ExigirHttps", false);
         // O roteamento não diferencia maiúsculas: o perímetro também não pode (revisão pós-F3, S3).
+        if (exigirHttps)
+        {
+            app.UseWhen(h => h.Request.Path.StartsWithSegments("/whatsapp", StringComparison.OrdinalIgnoreCase), b => b.Use(ExigirHttpsAsync));
+        }
+
         app.UseWhen(h => h.Request.Path.StartsWithSegments("/supervisao", StringComparison.OrdinalIgnoreCase), b =>
         {
             if (exigirHttps)
