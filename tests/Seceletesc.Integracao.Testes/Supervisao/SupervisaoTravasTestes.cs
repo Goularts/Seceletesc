@@ -151,7 +151,7 @@ public sealed class SupervisaoTravasTestes(BancoFixture banco)
     public async Task Todas_as_tabelas_de_negocio_terminam_as_migracoes_com_RLS_forcado()
     {
         // Tabelas sem RLS de propósito: sem dados de negócio ou consultadas antes de existir tenant, só por função.
-        var semRls = new[] { "tenant_numeros_whatsapp", "usuarios_supervisao", "fila_envio", "schema_migracoes", "autenticacoes_transacao" };
+        var semRls = new[] { "tenant_numeros_whatsapp", "usuarios_supervisao", "fila_envio", "fila_ia", "schema_migracoes", "autenticacoes_transacao" };
 
         var sql = "select string_agg(relname, ',' order by relname) from pg_class c join pg_namespace n on n.oid = c.relnamespace "
             + "where n.nspname = 'public' and c.relkind = 'r' and not (c.relrowsecurity and c.relforcerowsecurity) "

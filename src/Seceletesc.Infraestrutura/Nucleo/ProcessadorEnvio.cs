@@ -112,7 +112,7 @@ public sealed class ProcessadorEnvio(
         {
             using var limite = CancellationTokenSource.CreateLinkedTokenSource(ct);
             limite.CancelAfter(_timeoutGateway);
-            resultado = await gateway.EnviarTextoAsync(envio.WaIdCliente, envio.Texto, limite.Token).ConfigureAwait(false);
+            resultado = await gateway.EnviarTextoAsync(tenantId, envio.WaIdCliente, envio.Texto, limite.Token).ConfigureAwait(false);
         }
 #pragma warning disable CA1031 // Qualquer erro após iniciar o envio é ambíguo: tratado como incerto, nunca repetido.
         catch (Exception)

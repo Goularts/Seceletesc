@@ -321,8 +321,9 @@ public sealed class PipelineEnvioTestes(BancoFixture banco)
     {
         await using var amb = await AmbientePipeline.CriarAsync(banco, p => p.Aviso = "");
         await amb.ConhecimentoAsync("horario", Horario);
-        // Mensagem do cliente de 23h59 atrás; quando o worker processa, a janela já fechou.
-        await amb.Orquestrador(new MotorFalso(ctx => Task.FromResult(MotorFalso.Rascunho(ctx, Horario, "horario"))))
+        // Mensagem do cliente de 23h59 atrás; quando o worker processa, a janela já fechou. A idade máxima na fila da IA
+        // (que já mandaria esta mensagem para supervisão) é afrouxada só aqui, para exercitar a trava do próprio worker.
+        await amb.Orquestrador(new MotorFalso(ctx => Task.FromResult(MotorFalso.Rascunho(ctx, Horario, "horario"))), TimeSpan.FromDays(2))
             .ProcessarAsync(amb.Mensagem("Qual o horário?", em: AmbientePipeline.Inicio.AddHours(-23).AddMinutes(-59)));
         amb.Relogio.Agora = AmbientePipeline.Inicio.AddMinutes(2);
 
@@ -474,7 +475,7 @@ internal sealed class GatewayLento : IGatewayWhatsApp
 {
     public bool Cancelado { get; private set; }
 
-    public async Task<ResultadoEnvio> EnviarTextoAsync(string waIdDestino, string texto, CancellationToken ct)
+    public async Task<ResultadoEnvio> EnviarTextoAsync(Guid tenantId, string waIdDestino, string texto, CancellationToken ct)
     {
         try
         {

@@ -57,6 +57,21 @@ public sealed class FronteirasTestes
         Assert.True(resultado.IsSuccessful, Falhas(resultado));
     }
 
+    [Fact]
+    [Trait("Regra", "INV-6")]
+    [Trait("Regra", "INV-14")]
+    public void So_o_gateway_fala_com_a_Meta()
+    {
+        // Único componente com a credencial de envio (plano técnico, seção 4.4): nenhum outro tipo da infraestrutura
+        // usa HTTP de saída. A API só recebe o webhook.
+        var resultado = Types.InAssembly(typeof(Seceletesc.Infraestrutura.WhatsApp.GatewayWhatsAppCloud).Assembly)
+            .That().DoNotHaveName(nameof(Seceletesc.Infraestrutura.WhatsApp.GatewayWhatsAppCloud))
+            .ShouldNot().HaveDependencyOnAny("System.Net.Http.HttpClient", "System.Net.Http.HttpMessageInvoker")
+            .GetResult();
+
+        Assert.True(resultado.IsSuccessful, Falhas(resultado));
+    }
+
     private static string Falhas(TestResult resultado) =>
         "Dependências proibidas: " + string.Join(", ", resultado.FailingTypeNames ?? []);
 }

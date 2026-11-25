@@ -186,6 +186,12 @@ Limite assumido: pertinência fina e tom são julgamento do modelo. Esse risco �
 - Eventos de status separados das mensagens; ordenação por timestamp; processamento serializado por conversa.
 - Mensagens que não são texto (mídia, áudio, reação, edição): por padrão vão para supervisão, e a IA trata só texto. Lacuna funcional registrada.
 - **Sem templates pela API** (decisão do Victor). Fora da janela de 24h, o gateway bloqueia, a conversa recebe a marcação "retomada humana" e aparece no painel com status e resumo interno.
+- **Implementado na F4 (sem número real):**
+  - `POST /whatsapp/webhook`: assinatura sobre o corpo bruto (HMAC-SHA256 com o App Secret, tempo constante), limite de 1 MB, falha fechada sem App Secret (503). `GET /whatsapp/webhook`: desafio só com o token de verificação certo e só numérico.
+  - O webhook só **registra** (idempotente pelo `wamid`; ecos primeiro; evento com erro de dado é recusado sem derrubar o lote) e responde; a IA trata depois pela **fila durável** `fila_ia` (lease de 120 s, RLS por empresa, no máximo 3 tentativas, motor limitado a 60 s, mensagem com mais de 15 min na fila vai para supervisão). A decisão sai uma única vez: quem tira a mensagem da fila na transação da decisão decide. Mensagens seguidas: as anteriores são agrupadas à mais nova ainda na fila (evento `mensagem_agrupada`); fora de ordem, vão para supervisão (a confirmar). Processamento desligado: supervisão já no registro.
+  - Mensagem que não é texto: registra só o tipo e vai para supervisão. Eco do app (`smb_message_echoes`): registrado mascarado e cifrado, conversa em `Humano` (função mínima `registrar_eco_humano`); não abre nem estende a janela. Status `failed` de mensagem nossa aciona a supervisão; status idempotentes.
+  - Gateway real (`GatewayWhatsAppCloud`): só texto, sem prévia de link; 2xx sem id, 5xx e falha de rede = Incerta (nunca repetida); 429 = não enviada; 4xx = falha definitiva. **Desligado por padrão**: sem `WhatsApp:EnvioHabilitado` e token, nenhum trabalhador de envio é registrado e o gateway não chama a Meta. Teste de arquitetura: só o gateway usa HTTP de saída.
+  - Trabalhador da IA só com `WhatsApp:ProcessamentoHabilitado`; até a F5, o motor é indisponível (tudo vai para supervisão).
 - **Resposta humana pelo celular** exige que o número opere em modo de coexistência (WhatsApp Business App + Cloud API). As mensagens enviadas pelo app chegam como eventos de eco no webhook: cada eco é registrado no histórico e coloca a conversa em `Humano` imediatamente. **Verificar na F4** a disponibilidade da coexistência para o número e se o eco cobre todos os casos; sem isso, a resposta humana teria de passar pela API.
 
 ### 4.9 API de supervisão
@@ -263,6 +269,7 @@ F0 a F3 não dependem de decisão pendente nem de infraestrutura externa. Todas 
 
 | Fase | Situação |
 |---|---|
+| F4 WhatsApp (preparação) | implementada sem número real: webhook assinado, fila durável da IA, eco do app, status de entrega, gateway real desligado. Revisão em revisoes/2026-11-25-f4.md. Requisitos externos em docs/setup/whatsapp-integracao.md |
 | Pós-F3 | implementada: identidade comprovada no banco, atribuição de conversas, visibilidade por papel, piso da política, e-mail institucional, validade máxima, HTTPS. Revisão em revisoes/2026-11-25-pos-f3.md |
 | F3 Conhecimento e papéis | implementada: papéis no backend e no banco, ciclo de vida versionado e auditado, limites comerciais, dados protegidos proporcionais, pendência de retomada. Revisão em revisoes/2026-11-25-f3.md |
 | F2 Supervisão (API) | implementada: autenticação de desenvolvimento, assumir, liberar, responder, orientar, política; travas no banco para a mensagem humana. Revisão em revisoes/2026-11-25-f2.md |

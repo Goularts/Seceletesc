@@ -78,4 +78,5 @@ Não presumir. Decisões puramente técnicas (estrutura da solução, estratégi
 - Categorias de dados protegidos (criptografados e ocultos da IA). Padrão técnico inicial: CPF, CNPJ, RG, cartão de pagamento, e-mail, CEP/endereço. O Victor pode ampliar.
 - Quem pode ver dados protegidos no painel.
 - Finalidade para dados de identificação (CPF etc.): qual fluxo definirá finalidade, autorização, acesso e retenção? Até lá, bloqueados (decisão 26).
+- Mensagens seguidas do cliente (F4): hoje, com a mais nova ainda na fila, as anteriores são agrupadas a ela (respondidas juntas, com histórico); fora de ordem, vão para supervisão. Confirmar. Também: mensagem parada mais de 15 min na fila vai para supervisão; status de falha de entrega aciona supervisão.
 - Se a coexistência não estiver disponível para o número: como retomar conversas fora da janela de 24h, já que não há templates nem celular? (ver `docs/setup/whatsapp-integracao.md`)

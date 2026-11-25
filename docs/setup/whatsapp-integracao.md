@@ -1,6 +1,6 @@
 # Integração com o WhatsApp: requisitos antes de conectar o número real
 
-**Status:** preparação (F4). Nenhum número real conectado e nenhuma mensagem externa enviada. Conectar exige autorização explícita do Victor (decisão 31).
+**Status:** F4 implementada sem número real (webhook, fila da IA, eco, status, gateway desligado). Nenhum número real conectado e nenhuma mensagem externa enviada. Conectar exige autorização explícita do Victor (decisão 31).
 
 ## 1. O que precisa ser decidido ou fornecido pelo Victor
 
@@ -49,8 +49,30 @@ Nenhum destes valores vai para o Git. Em desenvolvimento: user-secrets; em produ
 | `WhatsApp:TokenVerificacao` | responder ao desafio de verificação do webhook (GET) |
 | `WhatsApp:TokenAcesso` | token permanente do usuário de sistema, usado só pelo gateway de envio |
 | `WhatsApp:EnvioHabilitado` | desligado por padrão: sem ele, nada sai para a Meta |
+| `WhatsApp:ProcessamentoHabilitado` | liga o trabalhador da fila da IA (até a F5, tudo vai para supervisão) |
+| `WhatsApp:Numeros:{id da empresa}` | `phone_number_id` de origem da empresa, usado pelo gateway |
+| `ConnectionStrings:App` e `ConnectionStrings:Worker` | papéis `seceletesc_app` (webhook, IA) e `seceletesc_worker` (envio) |
+| `DadosProtegidos:ChavePublicaPem` | chave pública para cifrar dados protegidos; sem ela, o webhook não registra mensagens |
 | Campos assinados no webhook | `messages` (mensagens e status) e, com coexistência, `smb_message_echoes` |
 | `tenant_numeros_whatsapp` | liga o `phone_number_id` do número à empresa (cadastro pelo administrador do banco) |
+
+## 4a. Pré-requisitos de operação (revisão da F4)
+
+- `WhatsApp:ProcessamentoHabilitado` ligado sempre que o webhook estiver recebendo: desligado, toda mensagem vai direto para supervisão.
+- Com o envio desligado, nenhuma mensagem sai, **inclusive respostas humanas pelo painel**: não conectar o número real com o envio desligado e humanos respondendo pelo painel.
+- Confirmar a assinatura de `smb_message_echoes` e o número em `tenant_numeros_whatsapp` antes de ligar o processamento: sem o eco, a resposta pelo celular não silencia a IA (invariante 24).
+- Connection strings de produção sem `Include Error Detail`; papel de login da supervisão com `log_parameter_max_length = 0`.
+- Limite de taxa do webhook: 600 pedidos por minuto por IP; no máximo 1.000 eventos por lote. Atrás de proxy, configurar `Seguranca:ProxiesConfiaveis` para o IP real.
+- Risco do piloto: dado de identificação digitado pelo humano no celular sai sem passar pelo backend (só é mascarado no histórico); aparelhos vinculados não compatíveis não geram eco.
+
+## 5. Roteiro de conexão (quando autorizado)
+
+1. Victor fornece os itens da seção 1 e decide o caminho da seção 2 ou 3.
+2. Cadastrar o número de teste da Meta em `tenant_numeros_whatsapp` (administrador do banco) e configurar os segredos (seção 4) fora do Git.
+3. Publicar a API com HTTPS e registrar a URL do webhook no app da Meta (campos `messages` e, com coexistência, `smb_message_echoes`).
+4. Com `EnvioHabilitado` desligado e `ProcessamentoHabilitado` ligado: enviar mensagens do celular de teste e conferir registro, mascaramento, fila e supervisão (até a F5, toda mensagem vai para supervisão).
+5. Só então, com autorização explícita, ligar `EnvioHabilitado` para o número de teste e validar envio, status e janela de 24h.
+6. Número real: nova autorização.
 
 ## Fontes consultadas
 

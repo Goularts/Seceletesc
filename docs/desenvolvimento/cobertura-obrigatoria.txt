@@ -8,14 +8,14 @@
 # Só entram aqui testes que verificam de fato a regra (revisão da F1a: rótulos errados foram removidos).
 
 # F0 Fundação
-INV-10 33  # isolamento entre empresas (RLS, papéis, pool) e escopo de conhecimento
-INV-14 10   # restrições no backend: fronteiras, schema estrito do rascunho, normalização
-INV-15 14   # histórico append-only
+INV-10 37  # isolamento entre empresas (RLS, papéis, pool) e escopo de conhecimento
+INV-14 16   # restrições no backend: fronteiras, schema estrito do rascunho, normalização
+INV-15 18   # histórico append-only
 
 # F1a Domínio (validador, estados, elegibilidade, dados protegidos)
 INV-1 2    # sem menus/opções numeradas
-INV-5 19    # IA muda sob controle humano; só liberação explícita volta ao automático
-INV-6 15    # backend decide o envio
+INV-5 23    # IA muda sob controle humano; só liberação explícita volta ao automático
+INV-6 23    # backend decide o envio
 INV-8 6    # não inventar valores
 INV-9 2    # fora do escopo autorizado
 INV-11 14   # confidencial não vai ao modelo
@@ -23,8 +23,8 @@ INV-13 1   # não se apresenta como humano
 INV-19 12   # propriedades do conhecimento (validade, classificações)
 INV-20 10   # só conhecimento aprovado e vigente
 INV-21 2   # exceção só no escopo autorizado
-INV-23 24   # dados protegidos detectados e retirados
-CTX-001 1
+INV-23 27   # dados protegidos detectados e retirados
+CTX-001 2
 CTX-002 1
 CTX-003 6
 CTX-004 1
@@ -57,17 +57,17 @@ ADV-21 1
 
 # F1b Pipeline, worker e travas do banco
 INV-2 1    # sem política, a IA não responde
-INV-3 1    # bloqueio aciona supervisão
+INV-3 8    # bloqueio aciona supervisão
 INV-7 2    # bloqueio nunca é regenerado; falha do motor = bloqueio
-INV-12 1   # instrução do cliente não muda a decisão
+INV-12 2   # instrução do cliente não muda a decisão
 INV-16 6   # IA só sugere (Rev)
 INV-17 9   # só humano aprova
-INV-24 7   # fora da janela de 24h: cancela e marca retomada humana
+INV-24 14   # fora da janela de 24h: cancela e marca retomada humana
 ADV-06 1
 ADV-16 2
 ADV-19 3
 ADV-20 3
-ADV-23 1
+ADV-23 2
 
 # F2 Supervisão (API)
 INV-4 8    # humano responde pelo mesmo número ou orienta
@@ -83,4 +83,6 @@ CTX-013 1  # conhecimento reutilizado tem origem, versão, escopo e autorizaçã
 INV-25 8   # políticas fundamentais: piso que a política não desativa
 INV-26 23  # menor privilégio e identidade comprovada no banco (atribuição, visibilidade, autoria)
 
-# Pendentes: INV-24 eco do app (F4), avaliação de pertinência/tom (F5), sugestão pela IA (F5, INV-16).
+# F4 WhatsApp: webhook assinado, fila da IA, eco do app (INV-24), status, gateway (mínimos acima já incluem)
+
+# Pendentes: avaliação de pertinência/tom (F5), sugestão pela IA (F5, INV-16).
