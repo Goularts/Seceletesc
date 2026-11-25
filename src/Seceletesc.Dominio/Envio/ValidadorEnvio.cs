@@ -26,6 +26,7 @@ public enum MotivoBloqueio
     UrlNaoPermitida,
     AvisoNaoConfigurado,
     TempoEsgotado,
+    DadoProtegidoNaResposta,
 }
 
 public sealed record ResultadoValidacao(bool Aprovado, MotivoBloqueio? Motivo, string? Detalhe)
@@ -89,6 +90,12 @@ public static partial class ValidadorEnvio
             || !Normalizacao.CaracteresPermitidos(rascunho.AssuntoDeclarado, out suspeito))
         {
             return ResultadoValidacao.Bloquear(MotivoBloqueio.CaracterNaoPermitido, suspeito);
+        }
+
+        // 0b. Nenhum dado protegido (CPF, cartão, e-mail...) sai numa resposta automática (invariantes 11 e 23).
+        if (DadosProtegidos.DetectorDadosProtegidos.Mascarar(rascunho.Texto).Ocorrencias.Count > 0)
+        {
+            return ResultadoValidacao.Bloquear(MotivoBloqueio.DadoProtegidoNaResposta);
         }
 
         // 1. Estado e versão: um humano pode ter assumido durante a geração.

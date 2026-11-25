@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Npgsql;
 using NpgsqlTypes;
@@ -88,9 +90,10 @@ internal static class RepositorioNucleo
         NpgsqlConnection c, NpgsqlTransaction tx, Guid id, Guid tenantId, Guid conversaId, Guid mensagemId, string categoria, DadoCifrado dado, CancellationToken ct)
     {
         await using var cmd = Cmd(c, tx, """
-            insert into dados_protegidos (id, tenant_id, conversa_id, mensagem_id, categoria, chave_cifrada, nonce, cifrado, tag)
-            values (@id, @t, @c, @m, @cat, @k, @n, @x, @g)
+            insert into dados_protegidos (id, tenant_id, conversa_id, mensagem_id, categoria, chave_id, chave_cifrada, nonce, cifrado, tag)
+            values (@id, @t, @c, @m, @cat, @kid, @k, @n, @x, @g)
             """);
+        cmd.Parameters.AddWithValue("kid", dado.ChaveId);
         cmd.Parameters.AddWithValue("id", id);
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("c", conversaId);
@@ -170,12 +173,14 @@ internal static class RepositorioNucleo
 
     public static async Task InserirDecisaoAsync(
         NpgsqlConnection c, NpgsqlTransaction tx, Guid id, Guid tenantId, Guid conversaId, long versaoEstado, string tipo, bool aprovada,
-        string? motivo, string? detalhe, int? politicaVersao, IEnumerable<ChaveFonte> entregues, IEnumerable<ChaveFonte> citadas, CancellationToken ct)
+        string? motivo, string? detalhe, int? politicaVersao, IEnumerable<ChaveFonte> entregues, IEnumerable<ChaveFonte> citadas,
+        string? textoAprovado, CancellationToken ct)
     {
         await using var cmd = Cmd(c, tx, """
-            insert into decisoes_envio (id, tenant_id, conversa_id, versao_estado, tipo, resultado, motivo, detalhe, politica_versao, itens_entregues, fontes_citadas)
-            values (@id, @t, @c, @v, @tipo, @res, @mot, @det, @pv, @ent::jsonb, @cit::jsonb)
+            insert into decisoes_envio (id, tenant_id, conversa_id, versao_estado, tipo, resultado, motivo, detalhe, politica_versao, itens_entregues, fontes_citadas, texto_sha256)
+            values (@id, @t, @c, @v, @tipo, @res, @mot, @det, @pv, @ent::jsonb, @cit::jsonb, @hash)
             """);
+        cmd.Parameters.AddWithValue("hash", textoAprovado is null ? DBNull.Value : HashTexto(textoAprovado));
         cmd.Parameters.AddWithValue("id", id);
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("c", conversaId);
@@ -214,6 +219,9 @@ internal static class RepositorioNucleo
         cmd.Parameters.AddWithValue("d", JsonSerializer.Serialize(dados));
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
+
+    /// <summary>Mesmo cálculo do banco: encode(sha256(convert_to(texto, 'UTF8')), 'hex').</summary>
+    internal static string HashTexto(string texto) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(texto)));
 
     internal static string ChavesJson(IEnumerable<ChaveFonte> chaves) =>
         JsonSerializer.Serialize(chaves.Select(k => new { item = k.ItemId, versao = k.Versao }));

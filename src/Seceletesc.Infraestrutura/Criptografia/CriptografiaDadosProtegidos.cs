@@ -3,13 +3,23 @@ using System.Text;
 
 namespace Seceletesc.Infraestrutura.Criptografia;
 
-/// <summary>Valor cifrado: chave AES por registro (envolvida por RSA-OAEP-SHA256), nonce, texto cifrado e tag.</summary>
-public sealed record DadoCifrado(byte[] ChaveCifrada, byte[] Nonce, byte[] Cifrado, byte[] Tag);
+/// <summary>
+/// Valor cifrado: impressão digital da chave pública usada (rotação), chave AES por registro envolvida
+/// por RSA-OAEP-SHA256, nonce, texto cifrado e tag.
+/// </summary>
+public sealed record DadoCifrado(string ChaveId, byte[] ChaveCifrada, byte[] Nonce, byte[] Cifrado, byte[] Tag);
+
+/// <summary>A que registro o dado pertence. Entra como dado associado do AES-GCM.</summary>
+public sealed record ContextoCifragem(Guid TenantId, Guid DadoId, Guid ConversaId, Guid MensagemId, string Categoria)
+{
+    internal byte[] DadosAssociados() =>
+        [.. TenantId.ToByteArray(), .. DadoId.ToByteArray(), .. ConversaId.ToByteArray(), .. MensagemId.ToByteArray(), .. Encoding.UTF8.GetBytes(Categoria)];
+}
 
 /// <summary>
 /// Cifra dados protegidos (invariante 23). Usa só a CHAVE PÚBLICA: o pipeline consegue cifrar, mas não
-/// consegue decifrar. O texto cifrado fica amarrado ao tenant e ao registro (dados associados do AES-GCM):
-/// copiar o valor para outra linha ou outro tenant faz a decifragem falhar.
+/// consegue decifrar. O texto cifrado fica amarrado ao tenant, à conversa, à mensagem, ao registro e à
+/// categoria: copiar o valor para outra linha faz a decifragem falhar.
 /// </summary>
 public sealed class CifradorDadosProtegidos : IDisposable
 {
@@ -29,11 +39,17 @@ public sealed class CifradorDadosProtegidos : IDisposable
         {
             throw new ArgumentException("Chave RSA de pelo menos 3072 bits.", nameof(chavePublicaPem));
         }
+
+        ChaveId = ImpressaoDigital(_publica);
     }
 
-    public DadoCifrado Cifrar(string valor, Guid tenantId, Guid dadoId)
+    /// <summary>SHA-256 da chave pública (SubjectPublicKeyInfo). Identifica qual par de chaves decifra o dado.</summary>
+    public string ChaveId { get; }
+
+    public DadoCifrado Cifrar(string valor, ContextoCifragem contexto)
     {
         ArgumentNullException.ThrowIfNull(valor);
+        ArgumentNullException.ThrowIfNull(contexto);
         var chave = RandomNumberGenerator.GetBytes(32);
         try
         {
@@ -43,11 +59,11 @@ public sealed class CifradorDadosProtegidos : IDisposable
             var tag = new byte[AesGcm.TagByteSizes.MaxSize];
             using (var aes = new AesGcm(chave, tag.Length))
             {
-                aes.Encrypt(nonce, claro, cifrado, tag, DadosAssociados(tenantId, dadoId));
+                aes.Encrypt(nonce, claro, cifrado, tag, contexto.DadosAssociados());
             }
 
             CryptographicOperations.ZeroMemory(claro);
-            return new DadoCifrado(_publica.Encrypt(chave, RSAEncryptionPadding.OaepSHA256), nonce, cifrado, tag);
+            return new DadoCifrado(ChaveId, _publica.Encrypt(chave, RSAEncryptionPadding.OaepSHA256), nonce, cifrado, tag);
         }
         finally
         {
@@ -57,7 +73,7 @@ public sealed class CifradorDadosProtegidos : IDisposable
 
     public void Dispose() => _publica.Dispose();
 
-    internal static byte[] DadosAssociados(Guid tenantId, Guid dadoId) => [.. tenantId.ToByteArray(), .. dadoId.ToByteArray()];
+    internal static string ImpressaoDigital(RSA rsa) => Convert.ToHexStringLower(SHA256.HashData(rsa.ExportSubjectPublicKeyInfo()));
 }
 
 /// <summary>
@@ -67,23 +83,31 @@ public sealed class CifradorDadosProtegidos : IDisposable
 public sealed class DecifradorDadosProtegidos : IDisposable
 {
     private readonly RSA _privada;
+    private readonly string _chaveId;
 
     public DecifradorDadosProtegidos(string chavePrivadaPem)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(chavePrivadaPem);
         _privada = RSA.Create();
         _privada.ImportFromPem(chavePrivadaPem);
+        _chaveId = CifradorDadosProtegidos.ImpressaoDigital(_privada);
     }
 
-    public string Decifrar(DadoCifrado dado, Guid tenantId, Guid dadoId)
+    public string Decifrar(DadoCifrado dado, ContextoCifragem contexto)
     {
         ArgumentNullException.ThrowIfNull(dado);
+        ArgumentNullException.ThrowIfNull(contexto);
+        if (!string.Equals(dado.ChaveId, _chaveId, StringComparison.Ordinal))
+        {
+            throw new CryptographicException("O dado foi cifrado com outra chave (ver rotação de chaves).");
+        }
+
         var chave = _privada.Decrypt(dado.ChaveCifrada, RSAEncryptionPadding.OaepSHA256);
         try
         {
             var claro = new byte[dado.Cifrado.Length];
             using var aes = new AesGcm(chave, dado.Tag.Length);
-            aes.Decrypt(dado.Nonce, dado.Cifrado, dado.Tag, claro, CifradorDadosProtegidos.DadosAssociados(tenantId, dadoId));
+            aes.Decrypt(dado.Nonce, dado.Cifrado, dado.Tag, claro, contexto.DadosAssociados());
             return Encoding.UTF8.GetString(claro);
         }
         finally

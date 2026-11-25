@@ -8,22 +8,22 @@
 # Só entram aqui testes que verificam de fato a regra (revisão da F1a: rótulos errados foram removidos).
 
 # F0 Fundação
-INV-10 18  # isolamento entre empresas (RLS, papéis, pool) e escopo de conhecimento
+INV-10 20  # isolamento entre empresas (RLS, papéis, pool) e escopo de conhecimento
 INV-14 9   # restrições no backend: fronteiras, schema estrito do rascunho, normalização
-INV-15 6   # histórico append-only
+INV-15 8   # histórico append-only
 
 # F1a Domínio (validador, estados, elegibilidade, dados protegidos)
 INV-1 2    # sem menus/opções numeradas
-INV-5 8    # IA muda sob controle humano; só liberação explícita volta ao automático
-INV-6 5    # backend decide o envio
+INV-5 9    # IA muda sob controle humano; só liberação explícita volta ao automático
+INV-6 6    # backend decide o envio
 INV-8 2    # não inventar valores
 INV-9 1    # fora do escopo autorizado
-INV-11 3   # confidencial não vai ao modelo
+INV-11 4   # confidencial não vai ao modelo
 INV-13 1   # não se apresenta como humano
 INV-19 4   # propriedades do conhecimento (validade, classificações)
 INV-20 3   # só conhecimento aprovado e vigente
 INV-21 1   # exceção só no escopo autorizado
-INV-23 10   # dados protegidos detectados e retirados
+INV-23 11   # dados protegidos detectados e retirados
 CTX-001 1
 CTX-002 1
 CTX-003 6
@@ -66,7 +66,7 @@ INV-24 1   # fora da janela de 24h: cancela e marca retomada humana
 ADV-06 1
 ADV-16 1
 ADV-19 1
-ADV-20 2
+ADV-20 3
 ADV-23 1
 
 # Pendentes: ADV-11 (resposta humana com exceção → F2), ADV-22 (IDOR → F2), INV-4 (resposta humana/orientação → F2),

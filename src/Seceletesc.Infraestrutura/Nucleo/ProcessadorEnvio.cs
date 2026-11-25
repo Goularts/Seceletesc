@@ -22,9 +22,14 @@ public enum ResultadoCiclo
 /// validade da mensagem. Marca "enviando" antes da chamada HTTP. Resultado ambíguo vira "incerta" e
 /// NUNCA é repetido: preferimos o risco de não enviar ao de enviar duas vezes.
 /// </summary>
-public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGatewayWhatsApp gateway, TimeProvider relogio)
+public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGatewayWhatsApp gateway, TimeProvider relogio, TimeSpan? timeoutGateway = null)
 {
     public static readonly TimeSpan Lease = TimeSpan.FromSeconds(60);
+
+    /// <summary>Limite da chamada ao WhatsApp. Sempre menor que o lease, para o envio terminar antes de a reserva vencer.</summary>
+    public static readonly TimeSpan TimeoutGatewayPadrao = TimeSpan.FromSeconds(30);
+
+    private readonly TimeSpan _timeoutGateway = timeoutGateway is { } t && t < Lease ? t : TimeoutGatewayPadrao;
 
     private readonly ExecutorTenant _executor = new(dataSourceWorker);
 
@@ -74,6 +79,13 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
                     await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, conversa.Id, "retomada_humana_marcada", new { motivo }, t).ConfigureAwait(false);
                 }
 
+                // A resposta não sairá: a automação é interrompida e a supervisão acionada (invariantes 3 e 7).
+                // Se o motivo é a intervenção humana, a conversa já está com o humano.
+                if (item.Tipo == "resposta" && motivo != MotivoEstadoMudou)
+                {
+                    await TransferirParaSupervisaoAsync(c, tx, conversa.Id, "envio_cancelado: " + motivo, t).ConfigureAwait(false);
+                }
+
                 return (ResultadoCiclo.Cancelada, null);
             }
 
@@ -89,7 +101,9 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
         ResultadoEnvio resultado;
         try
         {
-            resultado = await gateway.EnviarTextoAsync(envio.WaIdCliente, envio.Texto, ct).ConfigureAwait(false);
+            using var limite = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            limite.CancelAfter(_timeoutGateway);
+            resultado = await gateway.EnviarTextoAsync(envio.WaIdCliente, envio.Texto, limite.Token).ConfigureAwait(false);
         }
 #pragma warning disable CA1031 // Qualquer erro após iniciar o envio é ambíguo: tratado como incerto, nunca repetido.
         catch (Exception)
@@ -103,9 +117,11 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
             switch (resultado.Situacao)
             {
                 case SituacaoEnvio.Enviada:
-                    await AtualizarAsync(c, tx, outboxId, "enviada", null, resultado.Wamid, null, false, t).ConfigureAwait(false);
+                    // Se outra instância já marcou "incerta" (reserva vencida), o registro do envio ainda entra no histórico.
+                    var confirmada = await AtualizarAsync(c, tx, outboxId, "enviada", null, resultado.Wamid, null, false, t, exigirStatus: "enviando").ConfigureAwait(false);
                     await RepositorioNucleo.InserirMensagemAsync(c, tx, Guid.NewGuid(), tenantId, envio.ConversaId, "saida", envio.Texto, resultado.Wamid, relogio.GetUtcNow(), t).ConfigureAwait(false);
-                    await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, envio.ConversaId, "mensagem_enviada", new { outbox = outboxId, decisao = envio.DecisaoId }, t).ConfigureAwait(false);
+                    await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, envio.ConversaId, confirmada ? "mensagem_enviada" : "mensagem_enviada_apos_incerta",
+                        new { outbox = outboxId, decisao = envio.DecisaoId }, t).ConfigureAwait(false);
                     return ResultadoCiclo.Enviada;
                 case SituacaoEnvio.NaoEnviada:
                     // Com certeza não saiu: volta a "pendente" e será revalidada por completo na próxima reserva.
@@ -114,16 +130,20 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
                 case SituacaoEnvio.FalhaDefinitiva:
                     await AtualizarAsync(c, tx, outboxId, "cancelada", "falha definitiva: " + resultado.Detalhe, null, null, false, t).ConfigureAwait(false);
                     await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, envio.ConversaId, "envio_cancelado", new { outbox = outboxId, motivo = resultado.Detalhe }, t).ConfigureAwait(false);
+                    await TransferirParaSupervisaoAsync(c, tx, envio.ConversaId, "falha definitiva no envio", t).ConfigureAwait(false);
                     return ResultadoCiclo.Cancelada;
                 default:
                     await AtualizarAsync(c, tx, outboxId, "incerta", resultado.Detalhe, null, null, false, t).ConfigureAwait(false);
                     await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, envio.ConversaId, "envio_incerto", new { outbox = outboxId, motivo = resultado.Detalhe }, t).ConfigureAwait(false);
+                    // Um humano precisa conferir se a mensagem chegou.
+                    await TransferirParaSupervisaoAsync(c, tx, envio.ConversaId, "envio incerto", t).ConfigureAwait(false);
                     return ResultadoCiclo.Incerta;
             }
         }, ct).ConfigureAwait(false);
     }
 
     private const string MotivoForaDaJanela = "fora da janela de 24h";
+    private const string MotivoEstadoMudou = "estado da conversa mudou";
 
     private static async Task<string?> MotivoParaCancelarAsync(
         NpgsqlConnection c, NpgsqlTransaction tx, Item item, Conversa conversa, Dominio.Politicas.PoliticaTenant? politica, DateTimeOffset agora, CancellationToken ct)
@@ -142,7 +162,7 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
         {
             if (conversa.Estado != EstadoConversa.Automatico || conversa.VersaoEstado != item.VersaoDecisao)
             {
-                return "estado da conversa mudou";
+                return MotivoEstadoMudou;
             }
 
             var fontes = await RepositorioNucleo.ObterFontesAsync(c, tx, item.FontesCitadas, ct).ConfigureAwait(false);
@@ -154,7 +174,11 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
         }
         else if (conversa.Estado != EstadoConversa.TransferenciaPendente || conversa.VersaoEstado != item.VersaoDecisao)
         {
-            return "estado da conversa mudou";
+            return MotivoEstadoMudou;
+        }
+        else if (!string.Equals(item.Texto, politica.TextoAvisoTransferencia, StringComparison.Ordinal))
+        {
+            return "texto do aviso diferente do configurado na política";
         }
 
         return conversa.DentroDaJanela24h(agora) ? null : MotivoForaDaJanela;
@@ -191,20 +215,31 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
             r.GetString(5), r.GetInt64(6), RepositorioNucleo.LerChavesJson(r.GetString(7)), r.GetString(8));
     }
 
-    private static async Task AtualizarAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid id, string status, string? motivo, string? wamid, DateTimeOffset? leaseAte, bool incrementar, CancellationToken ct)
+    private static async Task<bool> AtualizarAsync(
+        NpgsqlConnection c, NpgsqlTransaction tx, Guid id, string status, string? motivo, string? wamid, DateTimeOffset? leaseAte, bool incrementar,
+        CancellationToken ct, string? exigirStatus = null)
     {
         await using var cmd = RepositorioNucleo.Cmd(c, tx, """
             update outbox set status = @s, motivo = coalesce(@m, motivo), wamid = coalesce(@w, wamid), lease_ate = @l,
                    tentativas = tentativas + case when @inc then 1 else 0 end
-             where id = @id
+             where id = @id and (@exigir::text is null or status = @exigir::text)
             """);
+        cmd.Parameters.AddWithValue("exigir", (object?)exigirStatus ?? DBNull.Value);
         cmd.Parameters.AddWithValue("s", status);
         cmd.Parameters.AddWithValue("m", (object?)motivo ?? DBNull.Value);
         cmd.Parameters.AddWithValue("w", (object?)wamid ?? DBNull.Value);
         cmd.Parameters.AddWithValue("l", (object?)leaseAte ?? DBNull.Value);
         cmd.Parameters.AddWithValue("inc", incrementar);
         cmd.Parameters.AddWithValue("id", id);
-        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1;
+    }
+
+    private static async Task TransferirParaSupervisaoAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid conversaId, string motivo, CancellationToken ct)
+    {
+        await using var cmd = RepositorioNucleo.Cmd(c, tx, "select transferir_para_supervisao(@c, @m)");
+        cmd.Parameters.AddWithValue("c", conversaId);
+        cmd.Parameters.AddWithValue("m", motivo);
+        await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
     }
 
     private static async Task MarcarRetomadaHumanaAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid conversaId, CancellationToken ct)

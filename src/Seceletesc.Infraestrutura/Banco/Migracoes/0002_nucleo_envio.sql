@@ -15,45 +15,67 @@ begin
   raise exception '% é imutável: % não é permitido', tg_table_name, tg_op using errcode = 'P0001';
 end $$;
 
+-- Chaves estrangeiras compostas (tenant_id, id): a checagem de FK ignora RLS, então a amarração ao tenant
+-- precisa estar na própria chave. Nenhum registro aponta para um id de outro tenant.
+alter table clientes add constraint uq_clientes_tenant_id unique (tenant_id, id);
+
 -- ---------------------------------------------------------------- conversas (4.1)
 create table conversas (
   id                          uuid primary key,
   tenant_id                   uuid not null references tenants(id),
-  cliente_id                  uuid not null references clientes(id),
+  cliente_id                  uuid not null,
   estado                      text not null check (estado in ('Automatico', 'TransferenciaPendente', 'Humano')),
   versao_estado               bigint not null check (versao_estado >= 1),
   ultima_mensagem_cliente_em  timestamptz,
   liberada_em                 timestamptz,
   marcada_retomada_humana     boolean not null default false,
   criada_em                   timestamptz not null default now(),
-  unique (tenant_id, cliente_id)
+  unique (tenant_id, cliente_id),
+  unique (tenant_id, id),
+  foreign key (tenant_id, cliente_id) references clientes (tenant_id, id)
 );
 
--- A versão do estado só cresce: nenhum código consegue "voltar" uma conversa para uma versão antiga.
-create function exigir_versao_crescente() returns trigger
+-- Trava da máquina de estados no banco (invariante 5):
+-- tenant e cliente da conversa são imutáveis; a versão só cresce e cresce a cada transição;
+-- fora da supervisão humana, a única transição permitida é Automatico -> TransferenciaPendente
+-- (interromper a automação). Assumir e liberar são exclusivos da supervisão.
+create function proteger_conversa() returns trigger
 language plpgsql set search_path = public, pg_temp as $$
 begin
+  if new.tenant_id <> old.tenant_id or new.cliente_id <> old.cliente_id or new.id <> old.id then
+    raise exception 'tenant, cliente e id da conversa são imutáveis' using errcode = 'P0001';
+  end if;
   if new.versao_estado < old.versao_estado
      or (new.estado <> old.estado and new.versao_estado <= old.versao_estado) then
     raise exception 'versao_estado deve crescer a cada transição' using errcode = 'P0001';
   end if;
+  if new.estado <> old.estado
+     and not pg_has_role(current_user, 'seceletesc_supervisao', 'member')
+     and not (old.estado = 'Automatico' and new.estado = 'TransferenciaPendente') then
+    raise exception 'Transição % -> % só pela supervisão humana', old.estado, new.estado using errcode = 'P0001';
+  end if;
+  if new.liberada_em is distinct from old.liberada_em and not pg_has_role(current_user, 'seceletesc_supervisao', 'member') then
+    raise exception 'Liberação só pela supervisão humana' using errcode = 'P0001';
+  end if;
   return new;
 end $$;
 
-create trigger tg_conversas_versao before update on conversas
-  for each row execute function exigir_versao_crescente();
+create trigger tg_conversas_protecao before update on conversas
+  for each row execute function proteger_conversa();
 
 -- ---------------------------------------------------------------- mensagens (append-only, sem dados protegidos)
 create table mensagens (
   id               uuid primary key,
   tenant_id        uuid not null references tenants(id),
-  conversa_id      uuid not null references conversas(id),
+  conversa_id      uuid not null,
   direcao          text not null check (direcao in ('entrada', 'saida')),
   texto_mascarado  text not null,
   wamid            text,
   ocorrida_em      timestamptz not null,
   criada_em        timestamptz not null default now(),
-  unique (tenant_id, wamid)
+  unique (tenant_id, wamid),
+  unique (tenant_id, id),
+  foreign key (tenant_id, conversa_id) references conversas (tenant_id, id)
 );
 create index ix_mensagens_conversa on mensagens (tenant_id, conversa_id, ocorrida_em);
 create trigger tg_mensagens_imutaveis before update or delete on mensagens
@@ -61,20 +83,38 @@ create trigger tg_mensagens_imutaveis before update or delete on mensagens
 create trigger tg_mensagens_sem_truncate before truncate on mensagens
   for each statement execute function bloquear_alteracao_imutavel();
 
+-- O worker só registra o que ele mesmo enviou.
+create function restringir_mensagens_do_worker() returns trigger
+language plpgsql set search_path = public, pg_temp as $$
+begin
+  if pg_has_role(current_user, 'seceletesc_worker', 'member')
+     and not pg_has_role(current_user, 'seceletesc_app', 'member')
+     and new.direcao <> 'saida' then
+    raise exception 'O worker só registra mensagens de saída' using errcode = 'P0001';
+  end if;
+  return new;
+end $$;
+
+create trigger tg_mensagens_worker before insert on mensagens
+  for each row execute function restringir_mensagens_do_worker();
+
 -- ---------------------------------------------------------------- dados protegidos (invariante 23)
 -- Valor original cifrado (AES-GCM com chave por registro, envolvida por RSA-OAEP). A aplicação só grava;
 -- só a supervisão lê, e só quem tem a chave privada decifra.
 create table dados_protegidos (
   id             uuid primary key,
   tenant_id      uuid not null references tenants(id),
-  conversa_id    uuid not null references conversas(id),
-  mensagem_id    uuid not null references mensagens(id),
+  conversa_id    uuid not null,
+  mensagem_id    uuid not null,
   categoria      text not null,
+  chave_id       text not null,  -- impressão digital da chave pública usada (rotação de chaves)
   chave_cifrada  bytea not null,
   nonce          bytea not null,
   cifrado        bytea not null,
   tag            bytea not null,
-  criado_em      timestamptz not null default now()
+  criado_em      timestamptz not null default now(),
+  foreign key (tenant_id, conversa_id) references conversas (tenant_id, id),
+  foreign key (tenant_id, mensagem_id) references mensagens (tenant_id, id)
 );
 create trigger tg_dados_protegidos_imutaveis before update or delete on dados_protegidos
   for each row execute function bloquear_alteracao_imutavel();
@@ -97,11 +137,12 @@ create table itens_conhecimento (
   assunto         text not null,
   status          text not null check (status in ('Rev', 'Aprovado', 'Rejeitado', 'Revogado')),
   versao_vigente  int not null check (versao_vigente >= 1),
-  criado_em       timestamptz not null default now()
+  criado_em       timestamptz not null default now(),
+  unique (tenant_id, id)
 );
 
 create table versoes_conhecimento (
-  item_id         uuid not null references itens_conhecimento(id),
+  item_id         uuid not null,
   versao          int not null check (versao >= 1),
   tenant_id       uuid not null references tenants(id),
   conteudo        text not null,
@@ -111,7 +152,8 @@ create table versoes_conhecimento (
   valido_ate      timestamptz,
   origem          text not null,
   criada_em       timestamptz not null default now(),
-  primary key (item_id, versao)
+  primary key (item_id, versao),
+  foreign key (tenant_id, item_id) references itens_conhecimento (tenant_id, id)
 );
 create trigger tg_versoes_imutaveis before update or delete on versoes_conhecimento
   for each row execute function bloquear_alteracao_imutavel();
@@ -139,7 +181,7 @@ create trigger tg_conhecimento_status before insert or update on itens_conhecime
 create table decisoes_envio (
   id                uuid primary key,
   tenant_id         uuid not null references tenants(id),
-  conversa_id       uuid not null references conversas(id),
+  conversa_id       uuid not null,
   versao_estado     bigint not null,
   tipo              text not null check (tipo in ('resposta', 'aviso_transferencia')),
   resultado         text not null check (resultado in ('aprovada', 'bloqueada')),
@@ -148,8 +190,12 @@ create table decisoes_envio (
   politica_versao   int,
   itens_entregues   jsonb not null default '[]'::jsonb,
   fontes_citadas    jsonb not null default '[]'::jsonb,
+  texto_sha256      text,  -- hash do texto exato que foi aprovado
   criada_em         timestamptz not null default now(),
-  check ((resultado = 'aprovada') = (motivo is null))
+  check ((resultado = 'aprovada') = (motivo is null)),
+  check (resultado = 'bloqueada' or texto_sha256 is not null),
+  unique (tenant_id, id),
+  foreign key (tenant_id, conversa_id) references conversas (tenant_id, id)
 );
 create trigger tg_decisoes_imutaveis before update or delete on decisoes_envio
   for each row execute function bloquear_alteracao_imutavel();
@@ -158,8 +204,8 @@ create trigger tg_decisoes_imutaveis before update or delete on decisoes_envio
 create table outbox (
   id             uuid primary key,
   tenant_id      uuid not null references tenants(id),
-  conversa_id    uuid not null references conversas(id),
-  decisao_id     uuid not null unique references decisoes_envio(id),
+  conversa_id    uuid not null,
+  decisao_id     uuid not null unique,
   texto          text not null,
   status         text not null check (status in ('pendente', 'enviando', 'enviada', 'cancelada', 'incerta')),
   expira_em      timestamptz not null,
@@ -168,21 +214,29 @@ create table outbox (
   wamid          text,
   motivo         text,
   criada_em      timestamptz not null default now(),
-  atualizada_em  timestamptz not null default now()
+  atualizada_em  timestamptz not null default now(),
+  foreign key (tenant_id, conversa_id) references conversas (tenant_id, id),
+  foreign key (tenant_id, decisao_id) references decisoes_envio (tenant_id, id)
 );
 
--- Restrição central: nenhuma mensagem automática entra na fila sem uma decisão APROVADA
--- da mesma conversa, tomada sobre a versão ATUAL do estado. Pular o validador é impossível.
+-- Restrição central: nenhuma mensagem automática entra na fila sem uma decisão APROVADA da mesma conversa,
+-- tomada sobre a versão ATUAL do estado, para o MESMO texto (hash) e com tipo compatível com o estado
+-- (resposta só em Automatico; aviso só em TransferenciaPendente).
+-- Limite: o banco não prova que o validador rodou (ele é código da aplicação); prova que a fila só recebe
+-- o que tem decisão aprovada e auditável. Ver plano técnico, seção 6.
 create function exigir_decisao_aprovada() returns trigger
 language plpgsql set search_path = public, pg_temp as $$
 declare
   d decisoes_envio%rowtype;
-  versao_atual bigint;
+  cv conversas%rowtype;
 begin
   select * into d from decisoes_envio where id = new.decisao_id;
-  select versao_estado into versao_atual from conversas where id = new.conversa_id;
+  select * into cv from conversas where id = new.conversa_id;
   if d.id is null or d.resultado <> 'aprovada' or d.conversa_id <> new.conversa_id
-     or d.tenant_id <> new.tenant_id or versao_atual is null or d.versao_estado <> versao_atual then
+     or d.tenant_id <> new.tenant_id or cv.id is null or d.versao_estado <> cv.versao_estado
+     or d.texto_sha256 <> encode(sha256(convert_to(new.texto, 'UTF8')), 'hex')
+     or (d.tipo = 'resposta' and cv.estado <> 'Automatico')
+     or (d.tipo = 'aviso_transferencia' and cv.estado <> 'TransferenciaPendente') then
     raise exception 'Mensagem automática sem decisão aprovada sobre a versão atual da conversa' using errcode = 'P0001';
   end if;
   if new.status <> 'pendente' then
@@ -252,8 +306,27 @@ language sql security definer set search_path = public, pg_temp as $$
       order by disponivel_em
       for update skip locked
       limit 1)
+     and p_lease_segundos between 10 and 600
   returning f.outbox_id, f.tenant_id
 $$;
+
+-- O worker aciona a supervisão quando cancela um envio (operacao-chatbot.md, seção 3, item 3).
+-- Mínima: só faz Automatico -> TransferenciaPendente, dentro do tenant da transação (RLS), e registra o evento.
+create function transferir_para_supervisao(p_conversa uuid, p_motivo text) returns bigint
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  nova_versao bigint;
+begin
+  update conversas set estado = 'TransferenciaPendente', versao_estado = versao_estado + 1
+   where id = p_conversa and estado = 'Automatico'
+  returning versao_estado into nova_versao;
+  if nova_versao is not null then
+    insert into eventos_historico (tenant_id, conversa_id, tipo, dados)
+    select tenant_id, id, 'transferencia_iniciada', jsonb_build_object('motivo', p_motivo, 'versao', nova_versao, 'origem', 'worker')
+      from conversas where id = p_conversa;
+  end if;
+  return nova_versao;
+end $$;
 
 -- ---------------------------------------------------------------- RLS
 alter table conversas enable row level security;            alter table conversas force row level security;
@@ -277,9 +350,9 @@ create policy outbox_isolamento on outbox using (tenant_id = tenant_atual()) wit
 -- ---------------------------------------------------------------- permissões
 revoke all on conversas, mensagens, dados_protegidos, politicas_tenant, itens_conhecimento, versoes_conhecimento,
               decisoes_envio, outbox, fila_envio from public;
-revoke all on function bloquear_alteracao_imutavel(), exigir_versao_crescente(), proteger_status_conhecimento(),
-                       exigir_decisao_aprovada(), proteger_estado_terminal_outbox(), enfileirar_envio(),
-                       desenfileirar_envio(), reservar_envio(int) from public;
+revoke all on function bloquear_alteracao_imutavel(), proteger_conversa(), restringir_mensagens_do_worker(),
+                       proteger_status_conhecimento(), exigir_decisao_aprovada(), proteger_estado_terminal_outbox(),
+                       enfileirar_envio(), desenfileirar_envio(), reservar_envio(int), transferir_para_supervisao(uuid, text) from public;
 
 grant usage on schema public to seceletesc_supervisao;
 grant execute on function tenant_atual() to seceletesc_supervisao;
@@ -298,7 +371,7 @@ grant select, update (marcada_retomada_humana) on conversas to seceletesc_worker
 grant select, insert on mensagens to seceletesc_worker;
 grant select on politicas_tenant, itens_conhecimento, versoes_conhecimento, decisoes_envio to seceletesc_worker;
 grant select, update (status, lease_ate, tentativas, wamid, motivo, atualizada_em) on outbox to seceletesc_worker;
-grant execute on function reservar_envio(int) to seceletesc_worker;
+grant execute on function reservar_envio(int), transferir_para_supervisao(uuid, text) to seceletesc_worker;
 
 -- Supervisão humana (F2/F3).
 grant select, update on conversas to seceletesc_supervisao;

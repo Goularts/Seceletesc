@@ -77,8 +77,9 @@ public sealed class ProcessadorMensagemRecebida(
             foreach (var o in mascarado.Ocorrencias)
             {
                 var dadoId = Guid.NewGuid();
-                await RepositorioNucleo.InserirDadoProtegidoAsync(
-                    c, tx, dadoId, msg.TenantId, conversa.Id, mensagemId, o.Categoria.ToString(), cifrador.Cifrar(o.Valor, msg.TenantId, dadoId), t).ConfigureAwait(false);
+                var categoria = o.Categoria.ToString();
+                var dado = cifrador.Cifrar(o.Valor, new ContextoCifragem(msg.TenantId, dadoId, conversa.Id, mensagemId, categoria));
+                await RepositorioNucleo.InserirDadoProtegidoAsync(c, tx, dadoId, msg.TenantId, conversa.Id, mensagemId, categoria, dado, t).ConfigureAwait(false);
             }
 
             conversa.RegistrarMensagemDoCliente(msg.RecebidaEm);
@@ -157,7 +158,8 @@ public sealed class ProcessadorMensagemRecebida(
 
             var decisaoId = Guid.NewGuid();
             await RepositorioNucleo.InserirDecisaoAsync(c, tx, decisaoId, msg.TenantId, conversa.Id, conversa.VersaoEstado, "resposta",
-                resultado.Aprovado, resultado.Motivo?.ToString(), resultado.Detalhe, politica.Versao, preparo.Entregues!, citadas, t).ConfigureAwait(false);
+                resultado.Aprovado, resultado.Motivo?.ToString(), resultado.Detalhe, politica.Versao, preparo.Entregues!, citadas,
+                resultado.Aprovado ? rascunho!.Texto : null, t).ConfigureAwait(false);
 
             if (resultado.Aprovado)
             {
@@ -169,8 +171,10 @@ public sealed class ProcessadorMensagemRecebida(
             await RepositorioNucleo.InserirEventoAsync(c, tx, msg.TenantId, conversa.Id, "resposta_bloqueada",
                 new { decisao = decisaoId, motivo = resultado.Motivo?.ToString() }, t).ConfigureAwait(false);
 
-            // Se o humano já assumiu durante a geração, não há transferência a fazer.
-            if (conversa.Estado == Dominio.Conversas.EstadoConversa.Automatico)
+            // Bloqueio por estado mudado: um humano interveio durante a geração. Se assumiu, a conversa já é dele;
+            // se liberou, a liberação explícita prevalece (invariante 5) e a mensagem, anterior à liberação, não é
+            // tratada pela IA (plano 4.1). Nos demais bloqueios, a automação é interrompida (invariante 7).
+            if (conversa.Estado == Dominio.Conversas.EstadoConversa.Automatico && resultado.Motivo != MotivoBloqueio.EstadoMudou)
             {
                 await TransferirAsync(c, tx, conversa, politica, "resposta_bloqueada:" + resultado.Motivo, t).ConfigureAwait(false);
             }
@@ -201,7 +205,8 @@ public sealed class ProcessadorMensagemRecebida(
         var aviso = ValidadorEnvio.ValidarAvisoTransferencia(conversa, transicao.NovaVersao, politica);
         var decisaoId = Guid.NewGuid();
         await RepositorioNucleo.InserirDecisaoAsync(c, tx, decisaoId, conversa.TenantId, conversa.Id, conversa.VersaoEstado, "aviso_transferencia",
-            aviso.Aprovado, aviso.Motivo?.ToString(), aviso.Detalhe, politica.Versao, [], [], ct).ConfigureAwait(false);
+            aviso.Aprovado, aviso.Motivo?.ToString(), aviso.Detalhe, politica.Versao, [], [],
+            aviso.Aprovado ? politica.TextoAvisoTransferencia : null, ct).ConfigureAwait(false);
         if (aviso.Aprovado)
         {
             await RepositorioNucleo.InserirOutboxAsync(c, tx, conversa.TenantId, conversa.Id, decisaoId, politica.TextoAvisoTransferencia,
