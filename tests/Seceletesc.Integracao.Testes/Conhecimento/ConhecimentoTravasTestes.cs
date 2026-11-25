@@ -68,7 +68,7 @@ public sealed class ConhecimentoTravasTestes(BancoFixture banco)
             ExecutarAsync(amb.SupervisaoDs, amb.TenantId, InserirAprovada, item.ItemId, supervisor.Id, ["Publico"]));
 
         Assert.Equal("P0001", semClassificacao.SqlState);
-        Assert.Equal("P0001", desativado.SqlState);
+        Assert.Equal("28000", desativado.SqlState); // desativado nem comprova identidade na transação
     }
 
     [Theory]
@@ -179,7 +179,7 @@ public sealed class ConhecimentoTravasTestes(BancoFixture banco)
     private static Task<int> ExecutarAsync(
         NpgsqlDataSource ds, Guid tenant, string sql, Guid item, Guid? usuario, string[] classificacoes,
         string escopo = "Empresa", Guid? escopoRef = null, DateTimeOffset? validoAte = null) =>
-        new ExecutorTenant(ds).ExecutarAsync(tenant, async (c, tx, ct) =>
+        AmbientePipeline.ExecutarComPapelAsync(ds, tenant, usuario, async (c, tx, ct) =>
         {
             await using var cmd = new NpgsqlCommand(sql, c, tx);
             cmd.Parameters.AddWithValue("t", tenant);

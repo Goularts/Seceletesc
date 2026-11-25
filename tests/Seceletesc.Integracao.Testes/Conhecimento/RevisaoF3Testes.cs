@@ -32,15 +32,17 @@ public sealed class RevisaoF3Testes(BancoFixture banco)
         var item = (await amb.Conhecimento.SugerirAsync(amb.Supervisor, "precos", "Para este cliente, 10% de desconto.", null, null)).Id!.Value;
         Assert.Equal(SituacaoOperacao.Ok, (await amb.Conhecimento.AprovarAsync(amb.Supervisor, item, 1, new PermissoesConhecimento(["Negociacao"], "Cliente", cliente, Futuro))).Situacao);
         var (supervisor, _) = await amb.CriarUsuarioAsync(PapelSupervisao.Supervisor);
-        Assert.Equal(SituacaoOperacao.Ok, (await amb.Conhecimento.EditarAsync(supervisor, item, 2, "Desconto de 10% para todos.", null)).Situacao);
+        // Desde a revisão pós-F3 (S6), o supervisor nem enxerga conhecimento NEG aprovado: editar e aprovar "não acham" o item.
+        var editar = await amb.Conhecimento.EditarAsync(supervisor, item, 2, "Desconto de 10% para todos.", null);
 
-        var pelaApi = await amb.Conhecimento.AprovarAsync(supervisor, item, 3, new PermissoesConhecimento(["Publico"], "Empresa", null, null));
+        var pelaApi = await amb.Conhecimento.AprovarAsync(supervisor, item, 2, new PermissoesConhecimento(["Publico"], "Empresa", null, null));
         var direto = await Assert.ThrowsAsync<PostgresException>(() => Executar(amb.SupervisaoDs, amb.TenantId, """
             insert into versoes_conhecimento (item_id, versao, tenant_id, conteudo, classificacoes, escopo_tipo, origem, aprovada_por, aprovada_em)
-            values (@i, 4, @t, 'Desconto de 10% para todos.', '{Publico}', 'Empresa', 'contornando', @u, now())
+            values (@i, 3, @t, 'Desconto de 10% para todos.', '{Publico}', 'Empresa', 'contornando', @u, now())
             """, item, supervisor.Id));
 
-        Assert.Equal(SituacaoOperacao.Proibida, pelaApi.Situacao);
+        Assert.Equal(SituacaoOperacao.NaoEncontrada, editar.Situacao);
+        Assert.Equal(SituacaoOperacao.NaoEncontrada, pelaApi.Situacao);
         Assert.Equal("P0001", direto.SqlState);
         Assert.Equal(2, await amb.ConsultarAsync<int>($"select versao_vigente from itens_conhecimento where id = '{item}'"));
     }
@@ -78,7 +80,7 @@ public sealed class RevisaoF3Testes(BancoFixture banco)
     [Trait("Regra", "INV-23")]
     public async Task G4_orientacao_e_sugestao_ligadas_a_conversa_nao_guardam_nem_dado_comum()
     {
-        await using var amb = await AmbientePipeline.CriarAsync(banco);
+        await using var amb = await AmbientePipeline.CriarAsync(banco, p => p.Emails.Add("financeiro@empresa.com.br"));
         var conversa = await amb.ConversaAtendidaPelaIaAsync(Horario);
         await using var api = amb.Api();
         var admin = api.Cliente(amb.ChaveSupervisor);
@@ -89,7 +91,7 @@ public sealed class RevisaoF3Testes(BancoFixture banco)
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, orientacao.StatusCode);
         Assert.Equal(HttpStatusCode.UnprocessableEntity, ligada.StatusCode);
-        Assert.Equal(HttpStatusCode.Created, avulsa.StatusCode); // contato da empresa: precisa estar na fonte para sair
+        Assert.Equal(HttpStatusCode.Created, avulsa.StatusCode); // e-mail institucional da política: precisa estar na fonte para sair
         Assert.Equal(0L, await banco.ConsultarComoAdminAsync($"select count(*) from versoes_conhecimento where tenant_id = '{amb.TenantId}' and conteudo like '%maria@%'"));
     }
 
@@ -166,6 +168,7 @@ public sealed class RevisaoF3Testes(BancoFixture banco)
         await using var tx = await conexao.BeginTransactionAsync();
         await using (var cmd = new NpgsqlCommand("""
             select set_config('app.tenant_id', @t, true);
+            select * from autenticar_transacao(@k);
             select pg_advisory_xact_lock(hashtextextended(@i::text, 0));
             update itens_conhecimento set status = 'Revogado', alterado_por = @u where id = @i;
             """, conexao, tx))
@@ -173,6 +176,7 @@ public sealed class RevisaoF3Testes(BancoFixture banco)
             cmd.Parameters.AddWithValue("t", amb.TenantId.ToString());
             cmd.Parameters.AddWithValue("i", item.ItemId);
             cmd.Parameters.AddWithValue("u", amb.Supervisor.Id);
+            cmd.Parameters.AddWithValue("k", amb.ChaveSupervisor);
             await cmd.ExecuteNonQueryAsync();
         }
 
@@ -300,7 +304,7 @@ public sealed class RevisaoF3Testes(BancoFixture banco)
     }
 
     private static Task<int> Executar(NpgsqlDataSource ds, Guid tenant, string sql, Guid id, Guid? usuario) =>
-        new ExecutorTenant(ds).ExecutarAsync(tenant, async (c, tx, ct) =>
+        AmbientePipeline.ExecutarComPapelAsync(ds, tenant, usuario, async (c, tx, ct) =>
         {
             await using var cmd = new NpgsqlCommand(sql, c, tx);
             cmd.Parameters.AddWithValue("t", tenant);

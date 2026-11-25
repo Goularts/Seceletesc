@@ -174,6 +174,18 @@ public sealed class ProcessadorEnvio(
         // liberada logo depois (responder e liberar). Só a janela de 24h e a validade da mensagem se aplicam.
         if (item.Tipo == TipoHumana)
         {
+            // Autor desativado, ou atendente que perdeu a conversa, depois de enfileirar: não sai (revisão pós-F3, S8).
+            await using (var autor = RepositorioNucleo.Cmd(c, tx, "select autor_ainda_pode_enviar(@t, @c, @a)"))
+            {
+                autor.Parameters.AddWithValue("t", conversa.TenantId);
+                autor.Parameters.AddWithValue("c", conversa.Id);
+                autor.Parameters.AddWithValue("a", item.AutorId!.Value);
+                if (await autor.ExecuteScalarAsync(ct).ConfigureAwait(false) is not true)
+                {
+                    return "autor da mensagem humana sem permissão no envio";
+                }
+            }
+
             return conversa.DentroDaJanela24h(agora) ? null : MotivoForaDaJanela;
         }
 

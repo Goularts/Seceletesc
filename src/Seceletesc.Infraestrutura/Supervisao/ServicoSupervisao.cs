@@ -24,12 +24,25 @@ public enum PapelSupervisao
     Administrador,
 }
 
-/// <summary>Usuário humano autenticado. O tenant e o papel vêm daqui, nunca da requisição.</summary>
+/// <summary>
+/// Usuário humano autenticado. O tenant e o papel vêm daqui, nunca da requisição. A credencial (chave apresentada
+/// na requisição) é reapresentada ao banco em cada transação, que comprova a identidade (migração 0005); ela não
+/// aparece no ToString nem em logs.
+/// </summary>
 public sealed record UsuarioSupervisao(Guid Id, Guid TenantId, PapelSupervisao Papel)
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? Credencial { get; init; }
+
     public bool PodeGerirAtendimento => Papel >= PapelSupervisao.Supervisor;
 
     public bool EhAdministrador => Papel == PapelSupervisao.Administrador;
+
+    private bool PrintMembers(System.Text.StringBuilder builder)
+    {
+        builder.Append(System.Globalization.CultureInfo.InvariantCulture, $"Id = {Id}, TenantId = {TenantId}, Papel = {Papel}");
+        return true;
+    }
 }
 
 public enum SituacaoOperacao
@@ -54,7 +67,11 @@ public sealed record ResultadoOperacao(SituacaoOperacao Situacao, string? Detalh
 
 public sealed record ResumoConversa(
     Guid Id, string WaIdCliente, string Estado, long VersaoEstado, DateTimeOffset? UltimaMensagemClienteEm,
-    bool DentroDaJanela24h, bool MarcadaRetomadaHumana, DateTimeOffset? RetomadaEncerradaEm, string? RetomadaMotivo);
+    bool DentroDaJanela24h, bool MarcadaRetomadaHumana, DateTimeOffset? RetomadaEncerradaEm, string? RetomadaMotivo, Guid? AtribuidaA)
+{
+    /// <summary>Na fila: precisa de humano e ninguém é responsável.</summary>
+    public bool NaFila => AtribuidaA is null && (Estado != nameof(EstadoConversa.Automatico) || MarcadaRetomadaHumana);
+}
 
 public sealed record MensagemConversa(string Direcao, string Texto, DateTimeOffset OcorridaEm);
 
@@ -101,29 +118,40 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
         cmd.Parameters.AddWithValue("h", HashChave(chave));
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         return await r.ReadAsync(ct).ConfigureAwait(false)
-            ? new UsuarioSupervisao(r.GetGuid(0), r.GetGuid(1), Enum.Parse<PapelSupervisao>(r.GetString(2)))
+            ? new UsuarioSupervisao(r.GetGuid(0), r.GetGuid(1), Enum.Parse<PapelSupervisao>(r.GetString(2))) { Credencial = chave }
             : null;
     }
 
     public Task<IReadOnlyList<ResumoConversa>> ListarConversasAsync(UsuarioSupervisao usuario, string? estado, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(usuario);
-        return _executor.ExecutarAsync<IReadOnlyList<ResumoConversa>>(usuario.TenantId, async (c, tx, t) =>
+        return _executor.ExecutarAutenticadoAsync<IReadOnlyList<ResumoConversa>>(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
+            // Atendente: só as conversas atribuídas a ele e a fila (decisão 27). Supervisor e administrador: a empresa toda.
             await using var cmd = RepositorioNucleo.Cmd(c, tx, SelectResumo + """
                  where (@e::text is null or cv.estado = @e::text)
+                   and (not @restrito or cv.atribuida_a = @u or (cv.atribuida_a is null and (cv.estado <> 'Automatico' or cv.marcada_retomada_humana)))
                  order by cv.ultima_mensagem_cliente_em desc nulls last
                  limit 200
                 """);
             cmd.Parameters.AddWithValue("e", (object?)estado ?? DBNull.Value);
-            return await LerResumosAsync(cmd, t).ConfigureAwait(false);
+            cmd.Parameters.AddWithValue("restrito", !usuario.PodeGerirAtendimento);
+            cmd.Parameters.AddWithValue("u", usuario.Id);
+            var resumos = await LerResumosAsync(cmd, t).ConfigureAwait(false);
+
+            // Da fila, o atendente vê o telefone só parcialmente: o dado do cliente é de quem pegar o atendimento (G4).
+            return usuario.PodeGerirAtendimento
+                ? resumos
+                : resumos.Select(r => r.AtribuidaA == usuario.Id ? r : r with { WaIdCliente = OcultarTelefone(r.WaIdCliente) }).ToList();
         }, ct);
     }
+
+    internal static string OcultarTelefone(string waId) => waId.Length <= 4 ? new string('*', waId.Length) : new string('*', waId.Length - 4) + waId[^4..];
 
     public Task<DetalheConversa?> ObterConversaAsync(UsuarioSupervisao usuario, Guid conversaId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(usuario);
-        return _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        return _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
             ResumoConversa? resumo;
             await using (var cmd = RepositorioNucleo.Cmd(c, tx, SelectResumo + " where cv.id = @id"))
@@ -132,7 +160,8 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
                 resumo = (await LerResumosAsync(cmd, t).ConfigureAwait(false)).SingleOrDefault();
             }
 
-            if (resumo is null)
+            // Atendente lê só o que está atribuído a ele. Da fila, vê o resumo na listagem e pega o atendimento para ler.
+            if (resumo is null || !PodeAtuar(usuario, resumo.AtribuidaA))
             {
                 return null;
             }
@@ -188,7 +217,7 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
     public Task<ResultadoOperacao> AssumirAsync(UsuarioSupervisao usuario, Guid conversaId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(usuario);
-        return _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        return _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
             var conversa = await RepositorioNucleo.ObterConversaComTravaAsync(c, tx, conversaId, t).ConfigureAwait(false);
             if (conversa is null)
@@ -196,16 +225,40 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
                 return ResultadoOperacao.NaoEncontrada;
             }
 
-            if (conversa.Estado == EstadoConversa.Humano)
+            var atribuida = await AtribuidaAsync(c, tx, conversaId, t).ConfigureAwait(false);
+            if (!usuario.PodeGerirAtendimento)
             {
-                return new ResultadoOperacao(SituacaoOperacao.Ok, "conversa já estava sob controle humano", conversa.VersaoEstado);
+                // Atendente: só o que é dele ou está na fila (precisa de humano e não tem responsável).
+                if (atribuida is { } outro && outro != usuario.Id)
+                {
+                    return ResultadoOperacao.NaoEncontrada;
+                }
+
+                if (atribuida is null && conversa.Estado == EstadoConversa.Automatico && !conversa.MarcadaRetomadaHumana)
+                {
+                    return ResultadoOperacao.Proibida("o atendente assume atendimentos da fila; para outras conversas, peça a um supervisor");
+                }
             }
 
-            var transicao = conversa.Assumir("assumida pela supervisão");
-            await AtualizarEstadoAsync(c, tx, conversa, t).ConfigureAwait(false);
-            await RepositorioNucleo.InserirEventoAsync(c, tx, usuario.TenantId, conversaId, "conversa_assumida",
-                new { usuario = usuario.Id, de = transicao.De.ToString(), versao = transicao.NovaVersao }, t).ConfigureAwait(false);
-            return new ResultadoOperacao(SituacaoOperacao.Ok, Versao: transicao.NovaVersao);
+            var versao = conversa.VersaoEstado;
+            string? detalhe = "conversa já estava sob controle humano";
+            if (conversa.Estado != EstadoConversa.Humano)
+            {
+                var transicao = conversa.Assumir("assumida pela supervisão");
+                await AtualizarEstadoAsync(c, tx, conversa, t).ConfigureAwait(false);
+                await RepositorioNucleo.InserirEventoAsync(c, tx, usuario.TenantId, conversaId, "conversa_assumida",
+                    new { usuario = usuario.Id, de = transicao.De.ToString(), versao = transicao.NovaVersao }, t).ConfigureAwait(false);
+                versao = transicao.NovaVersao;
+                detalhe = null;
+            }
+
+            // Quem assume um atendimento sem responsável passa a ser o responsável (pegar da fila).
+            if (atribuida is null)
+            {
+                await GravarAtribuicaoAsync(c, tx, usuario, conversaId, usuario.Id, t).ConfigureAwait(false);
+            }
+
+            return new ResultadoOperacao(SituacaoOperacao.Ok, detalhe, versao);
         }, ct);
     }
 
@@ -221,7 +274,7 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
             return ResultadoOperacao.Proibida("liberar a conversa para a IA exige supervisor ou administrador");
         }
 
-        return await _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        return await _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
             var conversa = await RepositorioNucleo.ObterConversaComTravaAsync(c, tx, conversaId, t).ConfigureAwait(false);
             if (conversa is null)
@@ -281,7 +334,7 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
             return ResultadoOperacao.Invalida("o motivo contém dado protegido");
         }
 
-        return await _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        return await _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
             var conversa = await RepositorioNucleo.ObterConversaComTravaAsync(c, tx, conversaId, t).ConfigureAwait(false);
             if (conversa is null)
@@ -322,10 +375,15 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
             return invalido;
         }
 
-        return await _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        return await _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
             var conversa = await RepositorioNucleo.ObterConversaComTravaAsync(c, tx, conversaId, t).ConfigureAwait(false);
             if (conversa is null)
+            {
+                return ResultadoOperacao.NaoEncontrada;
+            }
+
+            if (!PodeAtuar(usuario, await AtribuidaAsync(c, tx, conversaId, t).ConfigureAwait(false)))
             {
                 return ResultadoOperacao.NaoEncontrada;
             }
@@ -375,13 +433,6 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
             return invalido;
         }
 
-        // A orientação fica em claro na base de sugestões e é sobre esta conversa: nenhum dado protegido, nem comum
-        // (dado do cliente nunca chega ao modelo, invariante 23).
-        if (ContemDadoProtegido(texto!))
-        {
-            return ResultadoOperacao.Invalida("a orientação não pode conter dado protegido; descreva sem o dado");
-        }
-
         if (string.IsNullOrWhiteSpace(assunto) || assunto.Length > TamanhoMaximoAssunto)
         {
             return ResultadoOperacao.Invalida($"assunto obrigatório, com até {TamanhoMaximoAssunto} caracteres");
@@ -392,22 +443,27 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
             return ResultadoOperacao.Invalida("o assunto contém dado protegido");
         }
 
-        return await _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        return await _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
-            await using (var existe = RepositorioNucleo.Cmd(c, tx, "select 1 from conversas where id = @id"))
+            if (!await PodeAtuarNaConversaAsync(c, tx, usuario, conversaId, t).ConfigureAwait(false))
             {
-                existe.Parameters.AddWithValue("id", conversaId);
-                if (await existe.ExecuteScalarAsync(t).ConfigureAwait(false) is null)
-                {
-                    return ResultadoOperacao.NaoEncontrada;
-                }
+                return ResultadoOperacao.NaoEncontrada;
+            }
+
+            // A orientação fica em claro na base de sugestões e é sobre esta conversa: dado pessoal não entra
+            // (invariante 23; decisão 29). Só e-mail institucional listado na política.
+            var politica = await RepositorioNucleo.ObterPoliticaVigenteAsync(c, tx, usuario.TenantId, t).ConfigureAwait(false)
+                ?? new PoliticaTenant { TenantId = usuario.TenantId, Versao = 0, AssuntosAutonomos = new HashSet<string>() };
+            if (ServicoConhecimento.DadoPessoalEmConhecimento(texto!, politica) is { } pessoal)
+            {
+                return ResultadoOperacao.Invalida("a orientação não pode conter dado pessoal; descreva sem o dado (" + pessoal + ")");
             }
 
             var itemId = Guid.NewGuid();
             await using (var cmd = RepositorioNucleo.Cmd(c, tx, """
                 insert into itens_conhecimento (id, tenant_id, assunto, status, versao_vigente) values (@i, @t, @a, 'Rev', 1);
-                insert into versoes_conhecimento (item_id, versao, tenant_id, conteudo, classificacoes, escopo_tipo, escopo_ref, valido_ate, origem)
-                values (@i, 1, @t, @c, '{}', 'Atendimento', @conv, null, @o);
+                insert into versoes_conhecimento (item_id, versao, tenant_id, conteudo, classificacoes, escopo_tipo, escopo_ref, valido_ate, origem, proposta_por)
+                values (@i, 1, @t, @c, '{}', 'Atendimento', @conv, null, @o, @u);
                 """))
             {
                 cmd.Parameters.AddWithValue("i", itemId);
@@ -416,6 +472,7 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
                 cmd.Parameters.AddWithValue("c", texto!);
                 cmd.Parameters.AddWithValue("conv", conversaId);
                 cmd.Parameters.AddWithValue("o", $"orientacao_interna:usuario:{usuario.Id}");
+                cmd.Parameters.AddWithValue("u", usuario.Id);
                 await cmd.ExecuteNonQueryAsync(t).ConfigureAwait(false);
             }
 
@@ -425,10 +482,59 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
         }, ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Gestão da fila (decisão 27): supervisor e administrador atribuem, reatribuem ou retiram o responsável
+    /// (responsável nulo devolve à fila). O banco confere o papel de quem atribui e que o responsável é desta empresa.
+    /// </summary>
+    public async Task<ResultadoOperacao> AtribuirAsync(UsuarioSupervisao usuario, Guid conversaId, Guid? responsavel, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(usuario);
+        if (!usuario.PodeGerirAtendimento)
+        {
+            return ResultadoOperacao.Proibida("gerenciar a fila exige supervisor ou administrador");
+        }
+
+        try
+        {
+            return await _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
+            {
+                var conversa = await RepositorioNucleo.ObterConversaComTravaAsync(c, tx, conversaId, t).ConfigureAwait(false);
+                if (conversa is null)
+                {
+                    return ResultadoOperacao.NaoEncontrada;
+                }
+
+                // Conversa com a IA (mesmo com pendência de retomada) não tem responsável humano: assuma antes.
+                if (conversa.Estado == EstadoConversa.Automatico)
+                {
+                    return ResultadoOperacao.Conflito("a conversa está com a IA: assuma antes de atribuir", conversa.VersaoEstado);
+                }
+
+                if (responsavel is { } r)
+                {
+                    await using var ativo = RepositorioNucleo.Cmd(c, tx, "select usuario_ativo_da_empresa(@t, @r)");
+                    ativo.Parameters.AddWithValue("t", usuario.TenantId);
+                    ativo.Parameters.AddWithValue("r", r);
+                    if (await ativo.ExecuteScalarAsync(t).ConfigureAwait(false) is not true)
+                    {
+                        return ResultadoOperacao.Invalida("responsável não encontrado nesta empresa ou desativado");
+                    }
+                }
+
+                await GravarAtribuicaoAsync(c, tx, usuario, conversaId, responsavel, t).ConfigureAwait(false);
+                return new ResultadoOperacao(SituacaoOperacao.Ok, Versao: conversa.VersaoEstado);
+            }, ct).ConfigureAwait(false);
+        }
+        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.ForeignKeyViolation)
+        {
+            return ResultadoOperacao.Invalida("responsável não encontrado nesta empresa");
+        }
+    }
+
     public Task<PoliticaPublicada?> ObterPoliticaAsync(UsuarioSupervisao usuario, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(usuario);
-        return _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        return _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
             await using var cmd = RepositorioNucleo.Cmd(c, tx, "select versao, conteudo::text from politicas_tenant order by versao desc limit 1");
             await using var r = await cmd.ExecuteReaderAsync(t).ConfigureAwait(false);
@@ -459,6 +565,13 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
         try
         {
             politica = PoliticaJson.Ler(usuario.TenantId, versaoEsperada + 1, conteudoJson ?? string.Empty);
+
+            // Piso (invariante 25): pedir INT ou RES em resposta automática é recusado, não ignorado em silêncio.
+            if (PoliticaJson.ClassificacoesPedidas(conteudoJson!).FirstOrDefault(c =>
+                    PoliticaTenant.ClassificacoesNuncaAutomaticas.Select(x => x.ToString()).Contains(c, StringComparer.Ordinal)) is { } proibida)
+            {
+                return ResultadoOperacao.Invalida($"a classificação {proibida} nunca vai para resposta automática (políticas fundamentais)");
+            }
         }
         catch (Exception e) when (e is JsonException or FormatException or InvalidOperationException or ArgumentException)
         {
@@ -473,7 +586,7 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
         var canonica = PoliticaJson.Serializar(politica);
         try
         {
-            return await _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+            return await _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
             {
                 await using (var atual = RepositorioNucleo.Cmd(c, tx, "select coalesce(max(versao), 0) from politicas_tenant"))
                 {
@@ -548,6 +661,21 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
             return $"aviso de transferência recusado pela validação do envio: {bloqueio.Motivo}" + (bloqueio.Detalhe is { } d ? $" ({d})" : string.Empty);
         }
 
+        // E-mails institucionais: endereços completos, um por item (decisão 29).
+        foreach (var email in p.EmailsInstitucionais)
+        {
+            var ocorrencias = DetectorDadosProtegidos.Mascarar(email).Ocorrencias;
+            if (ocorrencias.Count != 1 || ocorrencias[0].Categoria != CategoriaDadoProtegido.Email || ocorrencias[0].Valor.Length != email.Length)
+            {
+                return "cada e-mail institucional precisa ser um endereço de e-mail completo";
+            }
+        }
+
+        if (p.ValidadeMaximaDias.Values.Any(d => d is < 1 or > 3650))
+        {
+            return "a validade máxima por classificação fica entre 1 e 3650 dias";
+        }
+
         if (p.ValidadeMensagemAutomatica < TimeSpan.FromSeconds(30) || p.ValidadeMensagemAutomatica > TimeSpan.FromHours(1))
         {
             return "validade da mensagem automática deve ficar entre 30 segundos e 1 hora";
@@ -584,6 +712,38 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
 
     private static bool ContemDadoProtegido(string texto) => DetectorDadosProtegidos.Mascarar(texto).Ocorrencias.Count > 0;
 
+    /// <summary>Atendente atua só no que está atribuído a ele; supervisor e administrador, em toda a empresa.</summary>
+    internal static bool PodeAtuar(UsuarioSupervisao usuario, Guid? atribuidaA) => usuario.PodeGerirAtendimento || atribuidaA == usuario.Id;
+
+    /// <summary>A conversa existe nesta empresa (RLS) e o usuário pode atuar nela.</summary>
+    internal static async Task<bool> PodeAtuarNaConversaAsync(NpgsqlConnection c, NpgsqlTransaction tx, UsuarioSupervisao usuario, Guid conversaId, CancellationToken ct)
+    {
+        await using var cmd = RepositorioNucleo.Cmd(c, tx, "select atribuida_a from conversas where id = @id");
+        cmd.Parameters.AddWithValue("id", conversaId);
+        var r = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return r is not null && PodeAtuar(usuario, r is Guid g ? g : null);
+    }
+
+    private static async Task<Guid?> AtribuidaAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid conversaId, CancellationToken ct)
+    {
+        await using var cmd = RepositorioNucleo.Cmd(c, tx, "select atribuida_a from conversas where id = @id");
+        cmd.Parameters.AddWithValue("id", conversaId);
+        return await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false) is Guid g ? g : null;
+    }
+
+    private static async Task GravarAtribuicaoAsync(NpgsqlConnection c, NpgsqlTransaction tx, UsuarioSupervisao usuario, Guid conversaId, Guid? responsavel, CancellationToken ct)
+    {
+        await using (var cmd = RepositorioNucleo.Cmd(c, tx, "update conversas set atribuida_a = @r where id = @id"))
+        {
+            cmd.Parameters.Add(new NpgsqlParameter("r", NpgsqlTypes.NpgsqlDbType.Uuid) { Value = (object?)responsavel ?? DBNull.Value });
+            cmd.Parameters.AddWithValue("id", conversaId);
+            await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        await RepositorioNucleo.InserirEventoAsync(c, tx, usuario.TenantId, conversaId, "conversa_atribuida",
+            new { usuario = usuario.Id, responsavel }, ct).ConfigureAwait(false);
+    }
+
     /// <summary>Só os campos que as transições da supervisão alteram (o papel não tem permissão para os demais).</summary>
     private static async Task AtualizarEstadoAsync(NpgsqlConnection c, NpgsqlTransaction tx, Conversa conversa, CancellationToken ct, Guid? liberadaPor = null)
     {
@@ -603,7 +763,7 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
 
     private const string SelectResumo = """
         select cv.id, cl.wa_id, cv.estado, cv.versao_estado, cv.ultima_mensagem_cliente_em, cv.marcada_retomada_humana,
-               cv.cliente_id, cv.tenant_id, cv.liberada_em, cv.retomada_encerrada_em, cv.retomada_motivo
+               cv.cliente_id, cv.tenant_id, cv.liberada_em, cv.retomada_encerrada_em, cv.retomada_motivo, cv.atribuida_a
           from conversas cv join clientes cl on cl.id = cv.cliente_id
         """;
 
@@ -619,7 +779,7 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
             var conversa = Conversa.Restaurar(r.GetGuid(0), r.GetGuid(7), r.GetGuid(6), Enum.Parse<EstadoConversa>(estado), r.GetInt64(3),
                 ultima, r.IsDBNull(8) ? null : r.GetFieldValue<DateTimeOffset>(8), r.GetBoolean(5));
             lista.Add(new ResumoConversa(conversa.Id, r.GetString(1), estado, conversa.VersaoEstado, ultima, conversa.DentroDaJanela24h(agora), conversa.MarcadaRetomadaHumana,
-                r.IsDBNull(9) ? null : r.GetFieldValue<DateTimeOffset>(9), r.IsDBNull(10) ? null : r.GetString(10)));
+                r.IsDBNull(9) ? null : r.GetFieldValue<DateTimeOffset>(9), r.IsDBNull(10) ? null : r.GetString(10), r.IsDBNull(11) ? null : r.GetGuid(11)));
         }
 
         return lista;

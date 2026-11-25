@@ -18,14 +18,55 @@ public sealed record PoliticaTenant
     /// <summary>Assuntos que sempre exigem humano. Prevalece sobre <see cref="AssuntosAutonomos"/>.</summary>
     public IReadOnlySet<string> AssuntosExigemHumano { get; init; } = new HashSet<string>();
 
-    /// <summary>Classificações que podem ir ao modelo e aparecer em resposta automática. Padrão: só PUB.</summary>
-    public IReadOnlySet<Classificacao> ClassificacoesPermitidasRespostaAutomatica { get; init; } = new HashSet<Classificacao> { Classificacao.Publico };
+    private readonly IReadOnlySet<Classificacao> _classificacoes = new HashSet<Classificacao> { Classificacao.Publico };
+    private readonly IReadOnlyList<string> _termos = TermosCompromissoPadrao;
+
+    /// <summary>
+    /// Classificações que podem ir ao modelo e aparecer em resposta automática. Padrão: só PUB.
+    /// Piso (políticas fundamentais, invariante 25): INT e RES nunca entram, mesmo que a política peça.
+    /// </summary>
+    public IReadOnlySet<Classificacao> ClassificacoesPermitidasRespostaAutomatica
+    {
+        get => _classificacoes;
+        init => _classificacoes = (value ?? throw new ArgumentNullException(nameof(value)))
+            .Where(c => !ClassificacoesNuncaAutomaticas.Contains(c)).ToHashSet();
+    }
+
+    /// <summary>Informação interna e restrita nunca vai para resposta automática (invariante 25).</summary>
+    public static IReadOnlySet<Classificacao> ClassificacoesNuncaAutomaticas { get; } = new HashSet<Classificacao> { Classificacao.Interno, Classificacao.Restrito };
 
     /// <summary>Texto fixo do aviso de transferência. Vazio = não envia aviso.</summary>
     public string TextoAvisoTransferencia { get; init; } = string.Empty;
 
-    /// <summary>Termos de compromisso sem número ("aprovado", "garantido", "amanhã"): exigem fonte que os contenha.</summary>
-    public IReadOnlyList<string> TermosCompromisso { get; init; } = TermosCompromissoPadrao;
+    /// <summary>
+    /// Termos de compromisso sem número ("aprovado", "garantido", "amanhã"): exigem fonte que os contenha.
+    /// Piso (invariante 25): a lista padrão sempre vale; a política só acrescenta termos.
+    /// </summary>
+    public IReadOnlyList<string> TermosCompromisso
+    {
+        get => _termos;
+        init => _termos = TermosCompromissoPadrao.Concat(value ?? throw new ArgumentNullException(nameof(value)))
+            .Distinct(StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>Termos que a política acrescentou ao piso (o que é gravado; o piso vem do código).</summary>
+    public IReadOnlyList<string> TermosCompromissoAdicionais => _termos.Except(TermosCompromissoPadrao, StringComparer.Ordinal).ToList();
+
+    /// <summary>
+    /// E-mails institucionais autorizados (decisão 29), em minúsculas. Qualquer outro e-mail é pessoal: não entra em
+    /// conhecimento nem sai em resposta automática.
+    /// </summary>
+    public IReadOnlySet<string> EmailsInstitucionais { get; init; } = new HashSet<string>();
+
+    /// <summary>
+    /// Prazo máximo de validade, em dias, por classificação (decisão 28). Sem prazo definido para uma classificação,
+    /// vale só a regra geral (não-PUB exige validade). Aplicado na aprovação.
+    /// </summary>
+    public IReadOnlyDictionary<Classificacao, int> ValidadeMaximaDias { get; init; } = new Dictionary<Classificacao, int>();
+
+    /// <summary>E-mail institucional autorizado (comparação sem diferenciar maiúsculas).</summary>
+    public bool EhEmailInstitucional(string email) =>
+        EmailsInstitucionais.Contains((email ?? throw new ArgumentNullException(nameof(email))).Trim().ToLowerInvariant());
 
     /// <summary>Domínios permitidos em URLs de respostas automáticas. Vazio = nenhuma URL.</summary>
     public IReadOnlySet<string> DominiosPermitidos { get; init; } = new HashSet<string>();

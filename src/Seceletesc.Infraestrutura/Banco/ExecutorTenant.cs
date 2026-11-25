@@ -30,6 +30,35 @@ public sealed class ExecutorTenant(NpgsqlDataSource dataSource)
         return resultado;
     }
 
+    /// <summary>
+    /// Igual a <see cref="ExecutarAsync{T}"/>, mas antes comprova no banco a identidade do usuário humano
+    /// (autenticar_transacao, migração 0005). Toda autoria gravada na transação precisa ser a desse usuário:
+    /// o banco não confia no id que a aplicação informa. Sem credencial, falha antes de abrir a conexão.
+    /// </summary>
+    public Task<T> ExecutarAutenticadoAsync<T>(
+        Guid tenantId,
+        string? credencial,
+        Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<T>> trabalho,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(trabalho);
+        if (string.IsNullOrEmpty(credencial))
+        {
+            throw new InvalidOperationException("Operação da supervisão sem credencial do usuário.");
+        }
+
+        return ExecutarAsync(tenantId, async (c, tx, t) =>
+        {
+            await using (var comando = new NpgsqlCommand("select 1 from autenticar_transacao(@k)", c, tx))
+            {
+                comando.Parameters.AddWithValue("k", credencial);
+                await comando.ExecuteScalarAsync(t).ConfigureAwait(false);
+            }
+
+            return await trabalho(c, tx, t).ConfigureAwait(false);
+        }, ct);
+    }
+
     internal static async Task DefinirTenantAsync(NpgsqlConnection conexao, NpgsqlTransaction tx, Guid tenantId, CancellationToken ct)
     {
         await using var comando = new NpgsqlCommand("select set_config('app.tenant_id', @t, true)", conexao, tx);

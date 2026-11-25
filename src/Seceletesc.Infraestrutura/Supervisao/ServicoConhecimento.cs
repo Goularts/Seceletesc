@@ -3,6 +3,7 @@ using Npgsql;
 using NpgsqlTypes;
 using Seceletesc.Dominio.Conhecimento;
 using Seceletesc.Dominio.DadosProtegidos;
+using Seceletesc.Dominio.Politicas;
 using Seceletesc.Infraestrutura.Banco;
 using Seceletesc.Infraestrutura.Nucleo;
 
@@ -58,25 +59,24 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
             return invalido;
         }
 
-        // Ligada a uma conversa, a sugestão tende a carregar dado do cliente: nenhum dado protegido, nem comum
-        // (invariante 23: dado enviado pelo cliente nunca chega ao modelo). Avulsa, aceita dado comum da empresa
-        // (ex.: e-mail de contato), que precisa estar na fonte aprovada para sair numa resposta automática.
-        if (conversaOrigem is not null && DetectorDadosProtegidos.Mascarar(conteudo!).Ocorrencias.Count > 0)
-        {
-            return ResultadoOperacao.Invalida("sugestão ligada a uma conversa não pode conter dado protegido");
-        }
-
         var permissoes = sugeridas ?? new PermissoesConhecimento(null, null, null, null);
         if (ValidarPermissoes(permissoes, aprovacao: false) is { } erro)
         {
             return ResultadoOperacao.Invalida(erro);
         }
 
-        return await _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        return await _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
-            if (conversaOrigem is { } conv && !await ExisteAsync(c, tx, "conversas", conv, t).ConfigureAwait(false))
+            // Atendente sugere a partir das conversas atribuídas a ele (decisão 27).
+            if (conversaOrigem is { } conv && !await ServicoSupervisao.PodeAtuarNaConversaAsync(c, tx, usuario, conv, t).ConfigureAwait(false))
             {
                 return ResultadoOperacao.NaoEncontrada;
+            }
+
+            var politica = await PoliticaAsync(c, tx, usuario.TenantId, t).ConfigureAwait(false);
+            if (DadoPessoalEmConhecimento(conteudo!, politica) is { } pessoal)
+            {
+                return ResultadoOperacao.Invalida(pessoal);
             }
 
             var escopoTipo = permissoes.EscopoTipo ?? (conversaOrigem is null ? nameof(TipoEscopo.Empresa) : nameof(TipoEscopo.Atendimento));
@@ -101,7 +101,7 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
 
             var origem = $"sugestao:usuario:{usuario.Id}" + (conversaOrigem is { } co ? $":conversa:{co}" : string.Empty);
             await InserirVersaoAsync(c, tx, usuario.TenantId, itemId, 1, conteudo!, permissoes.Classificacoes ?? [], escopoTipo, escopoRef,
-                permissoes.ValidoAte, origem, aprovador: null, t).ConfigureAwait(false);
+                permissoes.ValidoAte, origem, aprovador: null, t, proponente: usuario.Id).ConfigureAwait(false);
             await RepositorioNucleo.InserirEventoAsync(c, tx, usuario.TenantId, conversaOrigem, "conhecimento_sugerido",
                 new { usuario = usuario.Id, item = itemId, versao = 1 }, t).ConfigureAwait(false);
             return new ResultadoOperacao(SituacaoOperacao.Ok, Versao: 1, Id: itemId);
@@ -111,10 +111,12 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
     public Task<IReadOnlyList<ResumoConhecimento>> ListarAsync(UsuarioSupervisao usuario, string? status, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(usuario);
-        return _executor.ExecutarAsync<IReadOnlyList<ResumoConhecimento>>(usuario.TenantId, async (c, tx, t) =>
+        return _executor.ExecutarAutenticadoAsync<IReadOnlyList<ResumoConhecimento>>(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
-            await using var cmd = RepositorioNucleo.Cmd(c, tx, SelectResumo + " where (@s::text is null or i.status = @s::text) order by i.criado_em desc limit 500");
+            await using var cmd = RepositorioNucleo.Cmd(c, tx, SelectResumo + " where (@s::text is null or i.status = @s::text) and " + FiltroVisibilidade
+                + " order by i.criado_em desc limit 500");
             cmd.Parameters.AddWithValue("s", (object?)status ?? DBNull.Value);
+            AdicionarParametrosVisibilidade(cmd, usuario);
             return await LerResumosAsync(cmd, t).ConfigureAwait(false);
         }, ct);
     }
@@ -122,12 +124,13 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
     public Task<DetalheConhecimento?> ObterAsync(UsuarioSupervisao usuario, Guid itemId, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(usuario);
-        return _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        return _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
             ResumoConhecimento? resumo;
-            await using (var cmd = RepositorioNucleo.Cmd(c, tx, SelectResumo + " where i.id = @id"))
+            await using (var cmd = RepositorioNucleo.Cmd(c, tx, SelectResumo + " where i.id = @id and " + FiltroVisibilidade))
             {
                 cmd.Parameters.AddWithValue("id", itemId);
+                AdicionarParametrosVisibilidade(cmd, usuario);
                 resumo = (await LerResumosAsync(cmd, t).ConfigureAwait(false)).SingleOrDefault();
             }
 
@@ -139,10 +142,15 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
             var versoes = new List<VersaoConhecimento>();
             await using (var cmd = RepositorioNucleo.Cmd(c, tx, """
                 select versao, conteudo, classificacoes, escopo_tipo, escopo_ref, valido_ate, origem, aprovada_por, aprovada_em, criada_em
-                  from versoes_conhecimento where item_id = @id order by versao
+                  from versoes_conhecimento
+                 where item_id = @id and (not @atendente or aprovada_por is not null or proposta_por = @u)
+                 order by versao
                 """))
             {
+                // Atendente vê as versões aprovadas e as que ele mesmo propôs, não as edições pendentes de outros.
                 cmd.Parameters.AddWithValue("id", itemId);
+                cmd.Parameters.AddWithValue("atendente", usuario.Papel == PapelSupervisao.Atendente);
+                cmd.Parameters.AddWithValue("u", usuario.Id);
                 await using var r = await cmd.ExecuteReaderAsync(t).ConfigureAwait(false);
                 while (await r.ReadAsync(t).ConfigureAwait(false))
                 {
@@ -153,9 +161,17 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
             }
 
             var auditoria = new List<EventoConhecimento>();
-            await using (var cmd = RepositorioNucleo.Cmd(c, tx, "select tipo, dados::text, ocorrido_em from eventos_historico where dados->>'item' = @id order by id"))
+            // Atendente: só os próprios eventos e os de aprovação, não os de edições e rejeições de outros (S6).
+            await using (var cmd = RepositorioNucleo.Cmd(c, tx, """
+                select tipo, dados::text, ocorrido_em from eventos_historico
+                 where dados->>'item' = @id
+                   and (not @atendente or dados->>'usuario' = @u::text or tipo in ('conhecimento_aprovado', 'conhecimento_revogado'))
+                 order by id
+                """))
             {
                 cmd.Parameters.AddWithValue("id", itemId.ToString());
+                cmd.Parameters.AddWithValue("atendente", usuario.Papel == PapelSupervisao.Atendente);
+                cmd.Parameters.AddWithValue("u", usuario.Id);
                 await using var r = await cmd.ExecuteReaderAsync(t).ConfigureAwait(false);
                 while (await r.ReadAsync(t).ConfigureAwait(false))
                 {
@@ -192,9 +208,9 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
             return ResultadoOperacao.Invalida(erro);
         }
 
-        return await _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        return await _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
-            var item = await LerItemComTravaAsync(c, tx, itemId, t).ConfigureAwait(false);
+            var item = await LerItemComTravaAsync(c, tx, usuario, itemId, t).ConfigureAwait(false);
             if (item is null)
             {
                 return ResultadoOperacao.NaoEncontrada with { Detalhe = "conhecimento não encontrado" };
@@ -217,9 +233,15 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
                 return ResultadoOperacao.Invalida(refInvalida);
             }
 
+            var politica = await PoliticaAsync(c, tx, usuario.TenantId, t).ConfigureAwait(false);
+            if (DadoPessoalEmConhecimento(conteudo!, politica) is { } pessoal)
+            {
+                return ResultadoOperacao.Invalida(pessoal);
+            }
+
             var nova = item.Value.UltimaVersao + 1;
             await InserirVersaoAsync(c, tx, usuario.TenantId, itemId, nova, conteudo!, p.Classificacoes ?? [], escopoTipo, escopoRef, p.ValidoAte,
-                $"edicao:usuario:{usuario.Id}:base:{versaoBase}", aprovador: null, t).ConfigureAwait(false);
+                $"edicao:usuario:{usuario.Id}:base:{versaoBase}", aprovador: null, t, proponente: usuario.Id).ConfigureAwait(false);
             await RepositorioNucleo.InserirEventoAsync(c, tx, usuario.TenantId, null, "conhecimento_editado",
                 new { usuario = usuario.Id, item = itemId, versao = nova }, t).ConfigureAwait(false);
             return new ResultadoOperacao(SituacaoOperacao.Ok, Versao: nova, Id: itemId);
@@ -256,9 +278,9 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
             return ResultadoOperacao.Proibida("conhecimento NEG, EXC, RES ou CLI só é aprovado por administrador");
         }
 
-        return await _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        return await _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
-            var item = await LerItemComTravaAsync(c, tx, itemId, t).ConfigureAwait(false);
+            var item = await LerItemComTravaAsync(c, tx, usuario, itemId, t).ConfigureAwait(false);
             if (item is null)
             {
                 return ResultadoOperacao.NaoEncontrada with { Detalhe = "conhecimento não encontrado" };
@@ -303,6 +325,17 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
                 return conteudoInvalido;
             }
 
+            var politica = await PoliticaAsync(c, tx, usuario.TenantId, t).ConfigureAwait(false);
+            if (DadoPessoalEmConhecimento(item.Value.ConteudoUltima, politica) is { } pessoal)
+            {
+                return ResultadoOperacao.Invalida(pessoal);
+            }
+
+            if (ValidadeForaDoPrazo(classificacoes, permissoes.ValidoAte, politica) is { } prazo)
+            {
+                return ResultadoOperacao.Invalida(prazo);
+            }
+
             if (await ConferirReferenciaAsync(c, tx, permissoes.EscopoTipo!, permissoes.EscopoRef, t).ConfigureAwait(false) is { } refInvalida)
             {
                 return ResultadoOperacao.Invalida(refInvalida);
@@ -335,9 +368,9 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
             return ResultadoOperacao.Invalida("motivo obrigatório, sem dado protegido, com até 500 caracteres");
         }
 
-        var edicao = await _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        var edicao = await _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
-            var item = await LerItemComTravaAsync(c, tx, itemId, t).ConfigureAwait(false);
+            var item = await LerItemComTravaAsync(c, tx, usuario, itemId, t).ConfigureAwait(false);
             if (item is not { Status: "Aprovado" } i)
             {
                 return (ResultadoOperacao?)null; // segue pelo caminho da sugestão (ou devolve não encontrada/conflito lá)
@@ -385,9 +418,9 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
             return ResultadoOperacao.Invalida("motivo obrigatório, sem dado protegido, com até 500 caracteres");
         }
 
-        return await _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        return await _executor.ExecutarAutenticadoAsync(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
-            var item = await LerItemComTravaAsync(c, tx, itemId, t).ConfigureAwait(false);
+            var item = await LerItemComTravaAsync(c, tx, usuario, itemId, t).ConfigureAwait(false);
             if (item is null)
             {
                 return ResultadoOperacao.NaoEncontrada with { Detalhe = "conhecimento não encontrado" };
@@ -460,6 +493,78 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
         return null;
     }
 
+    /// <summary>
+    /// Dado pessoal não vira conhecimento (decisão 29; governanca-conhecimento.md, seção 3). Só e-mail institucional,
+    /// listado na política, é aceito. Qualquer outro dado protegido (CEP/endereço, documentos, cartão) é recusado em
+    /// todo conhecimento, qualquer que seja o escopo (revisão pós-F3, G1/S5). A mensagem cita só a categoria.
+    /// </summary>
+    internal static string? DadoPessoalEmConhecimento(string texto, PoliticaTenant politica)
+    {
+        foreach (var o in DetectorDadosProtegidos.Mascarar(texto).Ocorrencias)
+        {
+            if (o.Categoria != CategoriaDadoProtegido.Email)
+            {
+                return $"dado pessoal ({o.Categoria}) não entra em conhecimento";
+            }
+
+            if (!politica.EhEmailInstitucional(o.Valor))
+            {
+                return "e-mail fora da lista institucional da política é dado pessoal e não entra em conhecimento";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Prazo máximo de validade por classificação, definido na política (decisão 28).</summary>
+    private string? ValidadeForaDoPrazo(IReadOnlySet<Classificacao> classificacoes, DateTimeOffset? validoAte, PoliticaTenant politica)
+    {
+        var prazos = classificacoes.Where(politica.ValidadeMaximaDias.ContainsKey).Select(c => (c, dias: politica.ValidadeMaximaDias[c])).ToList();
+        if (prazos.Count == 0)
+        {
+            return null;
+        }
+
+        var (classificacao, dias) = prazos.MinBy(x => x.dias);
+        return validoAte is { } v && v <= relogio.GetUtcNow().AddDays(dias)
+            ? null
+            : $"a política limita a validade de {classificacao} a {dias} dias";
+    }
+
+    private static async Task<PoliticaTenant> PoliticaAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid tenant, CancellationToken ct) =>
+        await RepositorioNucleo.ObterPoliticaVigenteAsync(c, tx, tenant, ct).ConfigureAwait(false)
+        ?? new PoliticaTenant { TenantId = tenant, Versao = 0, AssuntosAutonomos = new HashSet<string>() };
+
+    /// <summary>
+    /// Menor privilégio (decisão 24; governanca-conhecimento.md, seção 3a). Vale a classificação APROVADA: um item
+    /// aparece só se todas as versões aprovadas estão dentro do que o papel vê (a classificação sugerida numa proposta
+    /// não esconde nem libera nada). Administrador: tudo. Supervisor: sem NEG, EXC e RES aprovados. Atendente: só PUB e
+    /// TMP, de escopo da empresa ou de conversa atribuída a ele, e apenas itens já aprovados ou sugeridos por ele.
+    /// </summary>
+    private const string FiltroVisibilidade = """
+        (@papel = 'Administrador'
+         or (@papel = 'Supervisor' and not exists (
+               select 1 from versoes_conhecimento x
+                where x.item_id = i.id and x.aprovada_por is not null and x.classificacoes && array['Negociacao', 'Excecao', 'Restrito']))
+         or (@papel = 'Atendente'
+             and not exists (
+               select 1 from versoes_conhecimento x
+                where x.item_id = i.id
+                  and ((x.aprovada_por is not null and x.classificacoes && array['Interno', 'Cliente', 'Negociacao', 'Excecao', 'Restrito'])
+                       or (x.escopo_tipo = 'Atendimento' and not exists (select 1 from conversas cv where cv.id = x.escopo_ref and cv.atribuida_a = @u))
+                       or (x.escopo_tipo = 'Cliente' and not exists (select 1 from conversas cv where cv.cliente_id = x.escopo_ref and cv.atribuida_a = @u))
+                       or x.escopo_tipo = 'Proposta'))
+             and (i.status = 'Aprovado'
+                  or (i.status = 'Rev' and exists (
+                        select 1 from versoes_conhecimento x where x.item_id = i.id and x.versao = 1 and x.proposta_por = @u)))))
+        """;
+
+    private static void AdicionarParametrosVisibilidade(NpgsqlCommand cmd, UsuarioSupervisao usuario)
+    {
+        cmd.Parameters.AddWithValue("papel", usuario.Papel.ToString());
+        cmd.Parameters.AddWithValue("u", usuario.Id);
+    }
+
     private static async Task<string?> ConferirReferenciaAsync(NpgsqlConnection c, NpgsqlTransaction tx, string escopoTipo, Guid? escopoRef, CancellationToken ct)
     {
         switch (escopoTipo)
@@ -504,12 +609,13 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
 
     private static async Task InserirVersaoAsync(
         NpgsqlConnection c, NpgsqlTransaction tx, Guid tenantId, Guid itemId, int versao, string conteudo, IReadOnlyList<string> classificacoes,
-        string escopoTipo, Guid? escopoRef, DateTimeOffset? validoAte, string origem, Guid? aprovador, CancellationToken ct)
+        string escopoTipo, Guid? escopoRef, DateTimeOffset? validoAte, string origem, Guid? aprovador, CancellationToken ct, Guid? proponente = null)
     {
         await using var cmd = RepositorioNucleo.Cmd(c, tx, """
-            insert into versoes_conhecimento (item_id, versao, tenant_id, conteudo, classificacoes, escopo_tipo, escopo_ref, valido_ate, origem, aprovada_por, aprovada_em)
-            values (@i, @v, @t, @c, @cl, @e, @er, @va, @o, @ap, case when @ap::uuid is null then null else now() end)
+            insert into versoes_conhecimento (item_id, versao, tenant_id, conteudo, classificacoes, escopo_tipo, escopo_ref, valido_ate, origem, aprovada_por, aprovada_em, proposta_por)
+            values (@i, @v, @t, @c, @cl, @e, @er, @va, @o, @ap, case when @ap::uuid is null then null else now() end, @pp)
             """);
+        cmd.Parameters.Add(new NpgsqlParameter("pp", NpgsqlDbType.Uuid) { Value = (object?)proponente ?? DBNull.Value });
         cmd.Parameters.AddWithValue("i", itemId);
         cmd.Parameters.AddWithValue("v", versao);
         cmd.Parameters.AddWithValue("t", tenantId);
@@ -538,8 +644,19 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
         bool UltimaRejeitada, bool VigenteAltoRisco, string OrigemEscopoTipo, Guid? OrigemEscopoRef);
 
     /// <summary>FOR UPDATE no item: aprovar, editar, rejeitar e revogar o mesmo item acontecem um de cada vez.</summary>
-    private static async Task<ItemTravado?> LerItemComTravaAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid itemId, CancellationToken ct)
+    private static async Task<ItemTravado?> LerItemComTravaAsync(NpgsqlConnection c, NpgsqlTransaction tx, UsuarioSupervisao usuario, Guid itemId, CancellationToken ct)
     {
+        // Só se opera sobre o que se vê (revisão pós-F3, S6): item fora da visibilidade do papel "não existe".
+        await using (var visivel = RepositorioNucleo.Cmd(c, tx, "select 1 from itens_conhecimento i where i.id = @id and " + FiltroVisibilidade))
+        {
+            visivel.Parameters.AddWithValue("id", itemId);
+            AdicionarParametrosVisibilidade(visivel, usuario);
+            if (await visivel.ExecuteScalarAsync(ct).ConfigureAwait(false) is null)
+            {
+                return null;
+            }
+        }
+
         // Trava consultiva exclusiva: o worker pega a compartilhada ao revalidar as fontes citadas, então revogar e
         // enviar não se cruzam (resta só a chamada HTTP já iniciada, como no resto do envio).
         await using (var consultiva = RepositorioNucleo.Cmd(c, tx, "select pg_advisory_xact_lock(hashtextextended(@id::text, 0))"))

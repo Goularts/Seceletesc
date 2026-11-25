@@ -7,4 +7,7 @@ alter role seceletesc_dono password :'senha';
 create role app_local login password :'senha' in role seceletesc_app;
 create role worker_local login password :'senha' in role seceletesc_worker;
 create role supervisao_local login password :'senha' in role seceletesc_supervisao;
+-- A supervisão apresenta a chave do usuário ao banco em cada transação: parâmetros nunca vão ao log do servidor.
+alter role supervisao_local set log_parameter_max_length = 0;
+alter role supervisao_local set log_parameter_max_length_on_error = 0;
 SQL

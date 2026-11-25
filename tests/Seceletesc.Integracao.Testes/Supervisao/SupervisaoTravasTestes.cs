@@ -67,10 +67,19 @@ public sealed class SupervisaoTravasTestes(BancoFixture banco)
         var conversa = await a.ConversaAtendidaPelaIaAsync();
         await a.AssumirAsync();
 
-        var erro = await Assert.ThrowsAsync<PostgresException>(() => ExecutarAsync(a.SupervisaoDs, a.TenantId, InserirMensagemHumana, conversa, b.Supervisor.Id));
+        // Revisão pós-F3 (G5): identidade comprovada com a chave do administrador de A, autor = usuário de B.
+        var erro = await Assert.ThrowsAsync<PostgresException>(() => new Infraestrutura.Banco.ExecutorTenant(a.SupervisaoDs).ExecutarAutenticadoAsync(a.TenantId, a.ChaveSupervisor, async (c, tx, ct) =>
+        {
+            await using var cmd = new NpgsqlCommand(InserirMensagemHumana, c, tx);
+            cmd.Parameters.AddWithValue("t", a.TenantId);
+            cmd.Parameters.AddWithValue("c", conversa);
+            cmd.Parameters.AddWithValue("a", b.Supervisor.Id);
+            return await cmd.ExecuteNonQueryAsync(ct);
+        }));
 
-        // Duas camadas: supervisor_ativo confere o tenant do autor (P0001) e a FK composta (23503).
-        Assert.Contains(erro.SqlState, new[] { "P0001", "23503" });
+        // supervisor_ativo confere tenant e identidade do autor antes da FK composta.
+        Assert.Equal("P0001", erro.SqlState);
+        Assert.Equal(0L, await a.ContarAsync($"outbox where tenant_id = '{a.TenantId}' and autor_id is not null"));
     }
 
     [Fact]
@@ -115,7 +124,8 @@ public sealed class SupervisaoTravasTestes(BancoFixture banco)
             values (gen_random_uuid(), @t, @c, null, @a, 'x', 'pendente', {expiraEm})
             """, conversa, amb.Supervisor.Id));
 
-        Assert.Equal("P0001", erro.SqlState);
+        // Usuário desativado nem comprova identidade (28000); prazo longo cai no trigger (P0001).
+        Assert.Equal(caso == "autor desativado" ? "28000" : "P0001", erro.SqlState);
     }
 
     [Theory]
@@ -141,7 +151,7 @@ public sealed class SupervisaoTravasTestes(BancoFixture banco)
     public async Task Todas_as_tabelas_de_negocio_terminam_as_migracoes_com_RLS_forcado()
     {
         // Tabelas sem RLS de propósito: sem dados de negócio ou consultadas antes de existir tenant, só por função.
-        var semRls = new[] { "tenant_numeros_whatsapp", "usuarios_supervisao", "fila_envio", "schema_migracoes" };
+        var semRls = new[] { "tenant_numeros_whatsapp", "usuarios_supervisao", "fila_envio", "schema_migracoes", "autenticacoes_transacao" };
 
         var sql = "select string_agg(relname, ',' order by relname) from pg_class c join pg_namespace n on n.oid = c.relnamespace "
             + "where n.nspname = 'public' and c.relkind = 'r' and not (c.relrowsecurity and c.relforcerowsecurity) "
@@ -167,7 +177,7 @@ public sealed class SupervisaoTravasTestes(BancoFixture banco)
     }
 
     private static Task<int> ExecutarAsync(NpgsqlDataSource ds, Guid tenant, string sql, Guid conversa, Guid? autor) =>
-        new ExecutorTenant(ds).ExecutarAsync(tenant, async (c, tx, ct) =>
+        AmbientePipeline.ExecutarComPapelAsync(ds, tenant, autor, async (c, tx, ct) =>
         {
             await using var cmd = new NpgsqlCommand(sql, c, tx);
             cmd.Parameters.AddWithValue("t", tenant);
