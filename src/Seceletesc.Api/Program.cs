@@ -11,6 +11,8 @@ if (args.Length > 0 && ComandosAdministracao.EhComando(args[0]))
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSingleton(TimeProvider.System);
+// Documento OpenAPI da API (só em desenvolvimento): /openapi/v1.json. Descreve as rotas; não expõe dados.
+builder.Services.AddOpenApi();
 // Conexão resolvida na primeira requisição: a API sobe sem banco (verificação de saúde) e os testes trocam a configuração.
 builder.Services.AddKeyedSingleton(EndpointsSupervisao.ChaveDataSource, (sp, _) =>
     NpgsqlDataSource.Create(sp.GetRequiredService<IConfiguration>().GetConnectionString("Supervisao")
@@ -47,6 +49,10 @@ if (!string.IsNullOrWhiteSpace(proxies))
 if (!app.Environment.IsDevelopment())
 {
     app.UseHsts();
+}
+else
+{
+    app.MapOpenApi();
 }
 
 app.MapGet("/saude", () => Results.Ok(new { status = "ok" }));

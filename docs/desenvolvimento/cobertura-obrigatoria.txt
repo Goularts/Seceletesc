@@ -10,20 +10,20 @@
 # F0 Fundação
 INV-10 37  # isolamento entre empresas (RLS, papéis, pool) e escopo de conhecimento
 INV-14 16   # restrições no backend: fronteiras, schema estrito do rascunho, normalização
-INV-15 18   # histórico append-only
+INV-15 21   # histórico append-only
 
 # F1a Domínio (validador, estados, elegibilidade, dados protegidos)
 INV-1 2    # sem menus/opções numeradas
 INV-5 23    # IA muda sob controle humano; só liberação explícita volta ao automático
-INV-6 23    # backend decide o envio
+INV-6 25    # backend decide o envio
 INV-8 6    # não inventar valores
 INV-9 2    # fora do escopo autorizado
 INV-11 14   # confidencial não vai ao modelo
 INV-13 1   # não se apresenta como humano
-INV-19 12   # propriedades do conhecimento (validade, classificações)
-INV-20 10   # só conhecimento aprovado e vigente
+INV-19 15   # propriedades do conhecimento (validade, classificações)
+INV-20 14   # só conhecimento aprovado e vigente
 INV-21 2   # exceção só no escopo autorizado
-INV-23 27   # dados protegidos detectados e retirados
+INV-23 30   # dados protegidos detectados e retirados
 CTX-001 2
 CTX-002 1
 CTX-003 6
@@ -57,8 +57,8 @@ ADV-21 1
 
 # F1b Pipeline, worker e travas do banco
 INV-2 1    # sem política, a IA não responde
-INV-3 8    # bloqueio aciona supervisão
-INV-7 2    # bloqueio nunca é regenerado; falha do motor = bloqueio
+INV-3 11    # bloqueio aciona supervisão
+INV-7 3    # bloqueio nunca é regenerado; falha do motor = bloqueio
 INV-12 2   # instrução do cliente não muda a decisão
 INV-16 6   # IA só sugere (Rev)
 INV-17 9   # só humano aprova

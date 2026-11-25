@@ -56,6 +56,8 @@ Resumo numerado das regras A e B: `docs/business-rules/invariants.md`.
 29. Orientações e dados pessoais (2026-11-25, pós-F3): dado pessoal nunca é promovido a conhecimento; só e-mails institucionais listados na política são da empresa.
 30. Segurança antes da exposição externa (2026-11-25, pós-F3): autenticação confiável, controle de identidade, autorização e HTTPS antes de disponibilizar a API fora do ambiente local. O banco não confia na identidade informada pela API.
 31. WhatsApp (2026-11-25, pós-F3): não presumir coexistência (app + Cloud API); alternativa é o atendimento humano pelo painel ligado à API, sempre com o mesmo número. Nenhum número real conectado nem mensagem externa enviada sem autorização do Victor.
+32. Decisões da F4 (2026-11-25, F4.5): sem coexistência, nada é enviado fora da janela até existir fluxo de templates autorizado (aguarda o cliente); INT e RES nunca divulgados automaticamente; atendente assume pela fila ou por atribuição autorizada; liberar não apaga histórico nem pendências externas; conhecimento aprovado é reavaliado pela nova política de validade, sem exclusão silenciosa; endereço institucional pode ser PUB aprovado, endereço de cliente é protegido; mensagens consecutivas podem ser agrupadas; fora de ordem são reconciliadas, ambiguidades vão à supervisão; atraso gera monitoramento e escalonamento com limites configuráveis; falha de entrega gera registro e supervisão; reações são registradas sem intervenção. Sem regras que gerem transferências desnecessárias.
+33. Ambiente (2026-11-25, F4.5): nada contratado por enquanto; demonstração local e checklist de configuração (`docs/setup/GUIA-ADMINISTRADOR.md`). O Ruflo faz parte da estratégia e não deve ser removido.
 
 ## Etapa atual
 
@@ -72,11 +74,11 @@ Não presumir. Decisões puramente técnicas (estrutura da solução, estratégi
 - Política de retenção, auditoria e LGPD.
 - Autenticação e usuários da API e do painel de supervisão. (Em desenvolvimento: chave de API por usuário, com papel, criada por linha de comando. Produção: a definir.)
 - Retomada após liberação: a IA responde mensagens recebidas durante o controle humano? (Padrão no plano: não.)
-- Mensagens que não são texto (mídia, áudio, reação, edição): a IA trata? (Padrão no plano: vão para supervisão.)
+- Endereço particular sem CEP (ex.: "Rua X, 100") não é detectado como dado protegido: entra como texto. Ampliar o detector para endereços? (limite registrado na F4.5)
+- Mensagem que chega depois da liberação com horário anterior a ela: hoje é registrada e a IA não a trata (não pertence ao período da IA), sem acionar ninguém. Acionar a supervisão nesse caso? (F4.5)
+- Mensagens que não são texto (mídia, áudio, edição): a IA trata? (Padrão no plano: vão para supervisão. Reações: decididas, só registro.)
 - Esclarecimento: em quais assuntos é permitido e como é gerado? (Padrão no plano: desligado.)
 - Cliente identificado pelo telefone: como tratar número compartilhado ou reciclado?
 - Categorias de dados protegidos (criptografados e ocultos da IA). Padrão técnico inicial: CPF, CNPJ, RG, cartão de pagamento, e-mail, CEP/endereço. O Victor pode ampliar.
 - Quem pode ver dados protegidos no painel.
 - Finalidade para dados de identificação (CPF etc.): qual fluxo definirá finalidade, autorização, acesso e retenção? Até lá, bloqueados (decisão 26).
-- Mensagens seguidas do cliente (F4): hoje, com a mais nova ainda na fila, as anteriores são agrupadas a ela (respondidas juntas, com histórico); fora de ordem, vão para supervisão. Confirmar. Também: mensagem parada mais de 15 min na fila vai para supervisão; status de falha de entrega aciona supervisão.
-- Se a coexistência não estiver disponível para o número: como retomar conversas fora da janela de 24h, já que não há templates nem celular? (ver `docs/setup/whatsapp-integracao.md`)

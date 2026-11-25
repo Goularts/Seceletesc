@@ -43,6 +43,53 @@ public sealed class PoliticasFundamentaisTestes
     }
 
     [Theory]
+    [Trait("Regra", "INV-19")]
+    [Trait("Regra", "INV-20")]
+    [InlineData(30, true)]
+    [InlineData(5, false)]
+    public void Conhecimento_aprovado_com_validade_acima_da_politica_atual_nao_e_usado(int diasDeValidade, bool excede)
+    {
+        var politica = Politica(p => p.Classificacoes.Add(Classificacao.Temporario)) with
+        {
+            ValidadeMaximaDias = new Dictionary<Classificacao, int> { [Classificacao.Temporario] = 7 },
+        };
+        var fonte = Fonte("horario", "Feriado.", classificacoes: [Classificacao.Temporario], validoAte: Agora.AddDays(diasDeValidade)) with { AprovadaEm = Agora.AddDays(-1) };
+
+        var motivo = ElegibilidadeConhecimento.Avaliar(fonte, politica, NovaConversa(), Agora);
+
+        Assert.Equal(excede ? MotivoInelegivel.ValidadeAcimaDaPolitica : null, motivo);
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-20")]
+    public void Sem_data_de_aprovacao_e_com_prazo_na_politica_falha_fechado()
+    {
+        // Revisão da F4.5 (S8): sem saber quando foi aprovado, não dá para garantir o prazo: não usa.
+        var politica = Politica(p => p.Classificacoes.Add(Classificacao.Temporario)) with
+        {
+            ValidadeMaximaDias = new Dictionary<Classificacao, int> { [Classificacao.Temporario] = 7 },
+        };
+        var fonte = Fonte("horario", "Feriado.", classificacoes: [Classificacao.Temporario], validoAte: Agora.AddDays(3));
+
+        Assert.Equal(MotivoInelegivel.ValidadeAcimaDaPolitica, ElegibilidadeConhecimento.Avaliar(fonte, politica, NovaConversa(), Agora));
+    }
+
+    [Theory]
+    [Trait("Regra", "INV-23")]
+    [InlineData("88015-200", true)]
+    [InlineData("01310-100", false)]
+    public void Cep_na_resposta_automatica_so_se_for_institucional(string cep, bool aprovado)
+    {
+        var texto = "Estamos no CEP " + cep + ".";
+        var fonte = Fonte("horario", texto);
+        var politica = Politica() with { CepsInstitucionais = new HashSet<string> { "88015200" } };
+
+        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", fonte), Contexto(NovaConversa(), politica, fonte));
+
+        Assert.Equal(aprovado, r.Aprovado);
+    }
+
+    [Theory]
     [Trait("Regra", "INV-25")]
     [Trait("Regra", "INV-11")]
     [InlineData(Classificacao.Interno)]

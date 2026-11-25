@@ -46,6 +46,35 @@ public sealed partial class CoberturaRegrasTestes
         Assert.True(inexistentes.Count == 0, "Regras obrigatórias que não existem: " + string.Join(", ", inexistentes));
     }
 
+    /// <summary>
+    /// Registro de regressões (docs/desenvolvimento/regressoes.md): todo bug corrigido aponta um teste que existe e está
+    /// ativo. Apagar, renomear ou ignorar esse teste quebra o CI. Fonte versionada; o Ruflo só recebe uma cópia.
+    /// </summary>
+    [Fact]
+    public void Toda_regressao_registrada_tem_teste_ativo()
+    {
+        var ativos = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var dll in AssembliesDeTeste())
+        {
+            using var modulo = ModuleDefinition.ReadModule(dll);
+            foreach (var metodo in modulo.GetTypes().SelectMany(t => t.Methods).Where(EhTesteAtivo))
+            {
+                ativos.Add(metodo.Name);
+            }
+        }
+
+        var linhas = File.ReadAllLines(Path.Combine(Raiz, "docs", "desenvolvimento", "regressoes.md"))
+            .Where(l => l.StartsWith("| REG-", StringComparison.Ordinal))
+            .Select(l => l.Split('|').Select(c => c.Trim()).ToArray())
+            .ToList();
+        var ids = linhas.Select(c => c[1]).ToList();
+        var semTeste = linhas.Where(c => !ativos.Contains(c[5])).Select(c => $"{c[1]} -> {c[5]}").ToList();
+
+        Assert.NotEmpty(linhas);
+        Assert.True(ids.Count == ids.Distinct(StringComparer.Ordinal).Count(), "IDs de regressão repetidos");
+        Assert.True(semTeste.Count == 0, "Regressões sem teste ativo: " + string.Join("; ", semTeste));
+    }
+
     private static List<(string Id, int Minimo)> LerObrigatorias() =>
         File.ReadAllLines(Path.Combine(Raiz, "docs", "desenvolvimento", "cobertura-obrigatoria.txt"))
             .Select(l => l.Split('#')[0].Trim())

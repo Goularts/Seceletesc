@@ -35,7 +35,7 @@ Ajustes feitos depois do `init`:
 - `CLAUDE_FLOW_AUTO_UPDATE=false`: evita checagem de atualização e escrita em `~/.claude-flow`.
 - `RUFLO_FUNNEL=0`: desliga as promoções e eventos de marketing (`funnel.ruv.io`), que vêm ligados por padrão. A telemetria anônima já é desligada por padrão (depende de consentimento).
 - `RUFLO_DAEMON_AUTOSTART=0`: qualquer comando do Ruflo, inclusive o `mcp start`, sobe por padrão um daemon residente com workers agendados (map, audit, optimize, testgaps, backup...). Desligado. Para usar, rode `ruflo daemon start` de forma explícita.
-- Nenhum hook do Ruflo foi instalado.
+- Na instalação (2026-11-24), nenhum hook foi instalado e a memória ficou em modo não persistente. **Na F4.5 (2026-11-25)** o Ruflo passou a participar do fluxo por hooks do Claude Code que chamam scripts versionados (`ferramentas/portao/`), com memória persistente pela linha de comando (`.swarm/memory.db`). Ver `docs/desenvolvimento/portao.md`.
 
 Arquivos do Ruflo no repositório: `.mcp.json`, `.claude-flow/config.yaml`, `.claude-flow/CAPABILITIES.md`, `.claude-flow/.gitignore`, `.claude/skills/swarm-orchestration/`. Estado de runtime fica fora do Git (ver `.gitignore`).
 
@@ -51,7 +51,7 @@ Limitações conhecidas:
 
 - `ruflo@3.80.6` está fixado, mas as dependências de `@claude-flow/cli` usam faixas (`^`). O `npx` pode resolver versões diferentes com o tempo.
 - O servidor MCP anuncia cerca de 394 ferramentas (~78 mil tokens de schema). O Claude Code carrega sob demanda, mas vale monitorar.
-- A memória do Ruflo está em modo `memory` (não persistente). Ver pendência 1.
+- A memória do servidor MCP aparece como `memory` na configuração, mas na prática (Windows) MCP e linha de comando gravam e leem o mesmo `.swarm/memory.db`, persistente (verificado na F4.5).
 
 ## Governança (revisada em 2026-11-24)
 

@@ -192,6 +192,12 @@ public static partial class ValidadorEnvio
             {
                 return ResultadoValidacao.Bloquear(MotivoBloqueio.DadoProtegidoNaResposta, "Email pessoal");
             }
+
+            // CEP fora da lista institucional é endereço de cliente: nunca sai em resposta automática.
+            if (ocorrencia.Categoria == CategoriaDadoProtegido.Cep && !politica.EhCepInstitucional(ocorrencia.Valor))
+            {
+                return ResultadoValidacao.Bloquear(MotivoBloqueio.DadoProtegidoNaResposta, "CEP particular");
+            }
         }
 
         original = mascarado.Texto;

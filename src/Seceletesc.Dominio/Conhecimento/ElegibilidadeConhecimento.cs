@@ -13,6 +13,9 @@ public enum MotivoInelegivel
     ForaDoEscopo,
     ClassificacaoNaoPermitida,
     ConhecimentoDeClienteMinimizado,
+
+    /// <summary>Aprovado antes de a política reduzir o prazo de validade da classificação: aguarda reavaliação humana.</summary>
+    ValidadeAcimaDaPolitica,
 }
 
 /// <summary>
@@ -52,6 +55,13 @@ public static class ElegibilidadeConhecimento
         if (fonte.ValidoAte is { } validoAte && validoAte <= agora)
         {
             return MotivoInelegivel.Expirado;
+        }
+
+        // Decisão do Victor (2026-11-25): a nova política de validade vale também para o que já foi aprovado. Não há
+        // exclusão silenciosa: o item continua no histórico e na lista de reavaliação da supervisão, só não é usado.
+        if (ExcedeValidadeDaPolitica(fonte.Classificacoes, fonte.ValidoAte, fonte.AprovadaEm, politica))
+        {
+            return MotivoInelegivel.ValidadeAcimaDaPolitica;
         }
 
         var noEscopo = fonte.Escopo.Tipo switch
@@ -102,4 +112,21 @@ public static class ElegibilidadeConhecimento
 
     public static bool EhElegivel(FonteConhecimento fonte, PoliticaTenant politica, Conversa conversa, DateTimeOffset agora) =>
         Avaliar(fonte, politica, conversa, agora) is null;
+
+    /// <summary>
+    /// A validade aprovada passa do prazo máximo que a política atual define para alguma das classificações
+    /// (contado da aprovação). Com prazo definido e sem data de aprovação conhecida, falha fechada (revisão da F4.5, S8).
+    /// </summary>
+    public static bool ExcedeValidadeDaPolitica(IReadOnlySet<Classificacao> classificacoes, DateTimeOffset? validoAte, DateTimeOffset? aprovadaEm, PoliticaTenant politica)
+    {
+        ArgumentNullException.ThrowIfNull(classificacoes);
+        ArgumentNullException.ThrowIfNull(politica);
+        var prazos = classificacoes.Where(politica.ValidadeMaximaDias.ContainsKey).Select(c => politica.ValidadeMaximaDias[c]).ToList();
+        if (prazos.Count == 0)
+        {
+            return false;
+        }
+
+        return aprovadaEm is not { } aprovacao || validoAte is not { } v || v > aprovacao.AddDays(prazos.Min());
+    }
 }

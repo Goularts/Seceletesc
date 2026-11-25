@@ -43,7 +43,7 @@ Propriedades **independentes** entre si:
 | Classificação | PUB, INT, TMP, CLI, NEG, EXC, RES (podem coexistir) |
 | Status | REV (pendente de revisão), aprovado, rejeitado, revogado |
 | Escopo | empresa, cliente, proposta ou atendimento |
-| Validade | data de expiração. Obrigatória para conhecimento não público; a política define prazos máximos por classificação (decisão do Victor, 2026-11-25), aplicados na aprovação (se o prazo vale também para o que já foi aprovado: a confirmar). PUB pode ter validade indefinida, mas continua sujeita a revisão e revogação |
+| Validade | data de expiração. Obrigatória para conhecimento não público; a política define prazos máximos por classificação (decisão do Victor, 2026-11-25), aplicados na aprovação e também ao que já foi aprovado: quando a política reduz o prazo, o conhecimento que passa do novo prazo deixa de ser usado e vai para reavaliação humana, com registro, sem exclusão silenciosa (decisão do Victor, 2026-11-25). PUB pode ter validade indefinida, mas continua sujeita a revisão e revogação |
 | Autorização / permissões | quem pode usar e em que condições; restrições de reprodução |
 | Origem | conversa, intervenção ou fonte de onde veio |
 | Versão | toda edição gera nova versão; versões anteriores são preservadas |
@@ -67,7 +67,7 @@ REV é status, não classificação.
 - **PUB** pode não ter expiração, mas sempre pode ser revisada e revogada.
 - Informação **confidencial** (INT, CLI, NEG, RES) não é reproduzida fora das permissões definidas.
 - **Permissões comerciais** (decisão do Victor, 2026-11-25): o agente é uma secretária de atendimento, não um agente comercial. Negociações, descontos, propostas especiais e exceções comerciais não são oferecidos autonomamente. Só o administrador aprova conhecimento NEG, EXC, RES ou CLI e altera a política que libera essas categorias. Mesmo com autorização do administrador, NEG e EXC só valem para um cliente ou atendimento definido e com validade. O que estiver fora das permissões vai para o atendimento humano.
-- **Dados pessoais não viram conhecimento** (decisão do Victor, 2026-11-25). Nenhum dado pessoal é promovido a conhecimento, nem por sugestão, orientação, edição ou aprovação. E-mail só entra em conhecimento se for um endereço institucional autorizado, listado na política da empresa; qualquer outro e-mail é tratado como pessoal e recusado. CEP e endereço também são recusados em todo conhecimento, inclusive o endereço da empresa, até o Victor definir se e como o endereço institucional pode entrar.
+- **Dados pessoais não viram conhecimento** (decisão do Victor, 2026-11-25). Nenhum dado pessoal é promovido a conhecimento, nem por sugestão, orientação, edição ou aprovação. E-mail só entra em conhecimento se for um endereço institucional autorizado, listado na política da empresa; qualquer outro e-mail é tratado como pessoal e recusado. Endereço institucional da empresa pode ser conhecimento público aprovado (decisão do Victor, 2026-11-25): só os CEPs listados como institucionais na política. Endereço particular de cliente é dado protegido e nunca entra em conhecimento.
 
 ## 3a. Papéis humanos
 

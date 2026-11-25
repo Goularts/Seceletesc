@@ -1,0 +1,104 @@
+{
+  "descricao": "Mapa de impacto usado pelo portão de mudanças (docs/desenvolvimento/portao.md). Para cada área do código: regras afetadas, componentes do registro de regressões, revisores obrigatórios e testes principais. Versionado: atualize ao criar áreas novas.",
+  "areas": [
+    {
+      "padrao": "src/Seceletesc.Dominio/Envio/",
+      "nome": "validador de envio",
+      "regras": ["INV-1", "INV-6", "INV-7", "INV-8", "INV-9", "INV-11", "INV-13", "INV-23", "INV-25"],
+      "componentes": ["validador"],
+      "revisores": ["guardiao-regras", "seguranca"],
+      "testes": ["tests/Seceletesc.Dominio.Testes/ValidadorEnvioTestes.cs", "tests/Seceletesc.Dominio.Testes/PoliticasFundamentaisTestes.cs"]
+    },
+    {
+      "padrao": "src/Seceletesc.Dominio/Conhecimento/",
+      "nome": "elegibilidade do conhecimento",
+      "regras": ["INV-10", "INV-11", "INV-19", "INV-20", "INV-21"],
+      "componentes": ["conhecimento"],
+      "revisores": ["guardiao-regras"],
+      "testes": ["tests/Seceletesc.Dominio.Testes/ElegibilidadeConhecimentoTestes.cs"]
+    },
+    {
+      "padrao": "src/Seceletesc.Dominio/DadosProtegidos/",
+      "nome": "detector de dados protegidos",
+      "regras": ["INV-23"],
+      "componentes": ["dados-protegidos"],
+      "revisores": ["seguranca", "guardiao-regras"],
+      "testes": ["tests/Seceletesc.Dominio.Testes/DetectorDadosProtegidosTestes.cs"]
+    },
+    {
+      "padrao": "src/Seceletesc.Dominio/Politicas/",
+      "nome": "política da empresa",
+      "regras": ["INV-25", "INV-11", "INV-19"],
+      "componentes": ["politica"],
+      "revisores": ["guardiao-regras"],
+      "testes": ["tests/Seceletesc.Dominio.Testes/PoliticasFundamentaisTestes.cs"]
+    },
+    {
+      "padrao": "src/Seceletesc.Infraestrutura/Banco/Migracoes/",
+      "nome": "migrações e travas do banco",
+      "regras": ["INV-5", "INV-6", "INV-10", "INV-15", "INV-17", "INV-26"],
+      "componentes": ["banco"],
+      "revisores": ["seguranca", "guardiao-regras"],
+      "testes": ["tests/Seceletesc.Integracao.Testes/Pipeline/TravasDoBancoTestes.cs", "tests/Seceletesc.Integracao.Testes/Supervisao/SupervisaoTravasTestes.cs"],
+      "aviso": "Migração aplicada não se edita: crie uma nova."
+    },
+    {
+      "padrao": "src/Seceletesc.Infraestrutura/Nucleo/ProcessadorEnvio.cs",
+      "nome": "worker de envio",
+      "regras": ["INV-5", "INV-6", "INV-24"],
+      "componentes": ["worker"],
+      "revisores": ["seguranca", "guardiao-regras"],
+      "testes": ["tests/Seceletesc.Integracao.Testes/Pipeline/PipelineEnvioTestes.cs"]
+    },
+    {
+      "padrao": "src/Seceletesc.Infraestrutura/Nucleo/ProcessadorMensagemRecebida.cs",
+      "nome": "processamento da mensagem e fila da IA",
+      "regras": ["INV-2", "INV-3", "INV-5", "INV-6", "INV-7", "INV-23"],
+      "componentes": ["ia"],
+      "revisores": ["guardiao-regras", "seguranca"],
+      "testes": ["tests/Seceletesc.Integracao.Testes/Pipeline/PipelineEnvioTestes.cs", "tests/Seceletesc.Integracao.Testes/WhatsApp/WebhookTestes.cs"]
+    },
+    {
+      "padrao": "src/Seceletesc.Infraestrutura/Supervisao/",
+      "nome": "supervisão e conhecimento (serviços)",
+      "regras": ["INV-4", "INV-5", "INV-10", "INV-16", "INV-17", "INV-18", "INV-26"],
+      "componentes": ["conhecimento", "atribuicao", "politica"],
+      "revisores": ["seguranca", "guardiao-regras"],
+      "testes": ["tests/Seceletesc.Integracao.Testes/Supervisao/", "tests/Seceletesc.Integracao.Testes/Conhecimento/"]
+    },
+    {
+      "padrao": "src/Seceletesc.Infraestrutura/WhatsApp/",
+      "nome": "integração WhatsApp (webhook e gateway)",
+      "regras": ["INV-6", "INV-10", "INV-14", "INV-24"],
+      "componentes": ["webhook", "gateway"],
+      "revisores": ["seguranca", "guardiao-regras"],
+      "testes": ["tests/Seceletesc.Integracao.Testes/WhatsApp/WebhookTestes.cs"]
+    },
+    {
+      "padrao": "src/Seceletesc.Api/",
+      "nome": "API (perímetro, autenticação, rotas)",
+      "regras": ["INV-10", "INV-14", "INV-26"],
+      "componentes": ["api", "webhook"],
+      "revisores": ["seguranca"],
+      "testes": ["tests/Seceletesc.Integracao.Testes/Supervisao/SupervisaoApiTestes.cs", "tests/Seceletesc.Integracao.Testes/Supervisao/PosF3Testes.cs"]
+    },
+    {
+      "padrao": "docs/business-rules/",
+      "nome": "regras do produto",
+      "regras": ["INV-1", "INV-26"],
+      "componentes": [],
+      "revisores": ["guardiao-regras"],
+      "testes": [],
+      "aviso": "Mudança de comportamento do chatbot exige aprovação do Victor."
+    },
+    {
+      "padrao": "tests/",
+      "nome": "testes",
+      "regras": ["INV-22"],
+      "componentes": [],
+      "revisores": ["guardiao-regras"],
+      "testes": [],
+      "aviso": "Não enfraqueça teste de regra para fazer uma implementação passar."
+    }
+  ]
+}

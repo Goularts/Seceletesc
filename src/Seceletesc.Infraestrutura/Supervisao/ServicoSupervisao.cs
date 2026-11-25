@@ -608,6 +608,15 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
 
                 await RepositorioNucleo.InserirEventoAsync(c, tx, usuario.TenantId, null, "politica_publicada",
                     new { usuario = usuario.Id, versao = versaoEsperada + 1 }, t).ConfigureAwait(false);
+
+                // Nova política de validade: o conhecimento aprovado que passa do prazo vai para reavaliação, com registro
+                // (decisão do Victor, 2026-11-25: sem exclusão silenciosa).
+                var reavaliar = await ServicoConhecimento.ItensParaReavaliarAsync(c, tx, politica, t).ConfigureAwait(false);
+                if (reavaliar.Count > 0)
+                {
+                    await RepositorioNucleo.InserirEventoAsync(c, tx, usuario.TenantId, null, "conhecimento_para_reavaliacao",
+                        new { usuario = usuario.Id, versao = versaoEsperada + 1, itens = reavaliar }, t).ConfigureAwait(false);
+                }
                 return new ResultadoOperacao(SituacaoOperacao.Ok, Versao: versaoEsperada + 1);
             }, ct).ConfigureAwait(false);
         }
@@ -669,6 +678,16 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
             {
                 return "cada e-mail institucional precisa ser um endereço de e-mail completo";
             }
+        }
+
+        if (p.CepsInstitucionais.Any(c => c.Length != 8))
+        {
+            return "cada CEP institucional precisa ter 8 dígitos";
+        }
+
+        if (p.AtrasoAvisoFila < TimeSpan.FromMinutes(1) || p.AtrasoEscalonamentoFila > TimeSpan.FromHours(24) || p.AtrasoAvisoFila > p.AtrasoEscalonamentoFila)
+        {
+            return "limites de atraso da fila: aviso a partir de 1 minuto, escalonamento até 24 horas, e aviso menor ou igual ao escalonamento";
         }
 
         if (p.ValidadeMaximaDias.Values.Any(d => d is < 1 or > 3650))

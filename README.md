@@ -12,11 +12,29 @@ Plataforma de atendimento inteligente por WhatsApp com supervisão humana e conh
 - .NET SDK 10
 - Docker (os testes de integração sobem um PostgreSQL real via Testcontainers)
 
+## Para começar
+
+- Estado real do projeto (o que funciona e o que não): [`docs/setup/estado-do-projeto.md`](docs/setup/estado-do-projeto.md)
+- O que depende do administrador: [`docs/setup/GUIA-ADMINISTRADOR.md`](docs/setup/GUIA-ADMINISTRADOR.md)
+- Portão de mudanças (Ruflo + Git + testes): [`docs/desenvolvimento/portao.md`](docs/desenvolvimento/portao.md)
+
+## Demonstração local, sem serviços externos (CMD)
+
+Com o Docker Desktop aberto:
+
+```cmd
+node ferramentas\demo\demo-local.cjs
+```
+
+Sobe o banco, aplica as migrações, cria uma empresa de demonstração, sobe a API, simula o WhatsApp com um webhook assinado e mostra o registro mascarado, a supervisão e a resposta humana na fila. Nada é enviado à Meta.
+
 ## Rodar os testes (CMD)
 
 ```cmd
 dotnet test
 ```
+
+Pelo portão (grava o resultado para a verificação de fim de tarefa): `node ferramentas\portao	estar.cjs`.
 
 ## Banco local (CMD)
 
@@ -47,6 +65,10 @@ Em outro terminal:
 ```cmd
 curl -H "Authorization: Bearer CHAVE" http://localhost:5224/supervisao/conversas
 ```
+
+Documento OpenAPI (só em desenvolvimento): `GET /openapi/v1.json`. Exemplos de requisição: `docs/setup/api-local.http`.
+
+Outros comandos: `registrar-numero --tenant ID --phone-number-id ID_DA_META` (liga um número à empresa) e `gerar-chaves --pasta PASTA_FORA_DO_GIT` (chaves de cifragem dos dados protegidos).
 
 Rotas (todas exigem a chave; o tenant vem do usuário):
 

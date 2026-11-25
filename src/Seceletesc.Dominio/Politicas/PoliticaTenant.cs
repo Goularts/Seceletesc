@@ -64,6 +64,22 @@ public sealed record PoliticaTenant
     /// </summary>
     public IReadOnlyDictionary<Classificacao, int> ValidadeMaximaDias { get; init; } = new Dictionary<Classificacao, int>();
 
+    /// <summary>
+    /// CEPs de endereços institucionais da empresa (decisão do Victor, 2026-11-25), só os 8 dígitos. Endereço
+    /// institucional pode ser conhecimento público aprovado; qualquer outro CEP é de cliente e fica protegido.
+    /// </summary>
+    public IReadOnlySet<string> CepsInstitucionais { get; init; } = new HashSet<string>();
+
+    /// <summary>Mensagem parada na fila da IA além disso gera registro de atraso (monitoramento).</summary>
+    public TimeSpan AtrasoAvisoFila { get; init; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>Mensagem parada na fila da IA além disso vai para a supervisão (escalonamento), sem resposta automática.</summary>
+    public TimeSpan AtrasoEscalonamentoFila { get; init; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>CEP institucional autorizado (compara só os dígitos).</summary>
+    public bool EhCepInstitucional(string cep) =>
+        CepsInstitucionais.Contains(new string((cep ?? throw new ArgumentNullException(nameof(cep))).Where(char.IsAsciiDigit).ToArray()));
+
     /// <summary>E-mail institucional autorizado (comparação sem diferenciar maiúsculas).</summary>
     public bool EhEmailInstitucional(string email) =>
         EmailsInstitucionais.Contains((email ?? throw new ArgumentNullException(nameof(email))).Trim().ToLowerInvariant());
