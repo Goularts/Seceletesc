@@ -18,6 +18,10 @@ begin
   if not exists (select 1 from pg_roles where rolname = 'seceletesc_worker') then
     create role seceletesc_worker nologin nosuperuser nocreatedb nocreaterole nobypassrls;
   end if;
+  -- API de supervisão humana (F2/F3): única que lê dados protegidos e altera status de conhecimento.
+  if not exists (select 1 from pg_roles where rolname = 'seceletesc_supervisao') then
+    create role seceletesc_supervisao nologin nosuperuser nocreatedb nocreaterole nobypassrls;
+  end if;
 end $$;
 
 -- O dono cria e possui os objetos do schema da aplicação.
