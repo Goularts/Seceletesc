@@ -226,6 +226,12 @@ Cada fase termina com CI verde, os testes de regra da fase cobertos e uma entrad
 
 F0 a F3 não dependem de decisão pendente nem de infraestrutura externa. Todas as garantias do chatbot ficam prontas e testadas antes de existir IA ou WhatsApp de verdade.
 
+## 5a. Andamento
+
+| Fase | Situação |
+|---|---|
+| F0 Fundação | implementada (branch `feat/f0-fundacao`): papéis sem superusuário, RLS forçado com `SET LOCAL`, histórico append-only com carimbo do banco, migrador com checksum, CI endurecido, contagem de testes por regra |
+
 ## 6. Riscos
 
 | Risco | Mitigação |
@@ -236,6 +242,9 @@ F0 a F3 não dependem de decisão pendente nem de infraestrutura externa. Todas 
 | Timeout ambíguo no envio | `incerto` sem repetição; supervisão avisada |
 | Mensagem parada no outbox enquanto a fonte é revogada | worker revalida fontes, com TTL |
 | Repositório público | gitleaks, push protection, nenhum dado real |
+| O dono das tabelas consegue desligar triggers ou políticas (é o dono) | a aplicação nunca usa o dono; credencial do dono só no pipeline de migração; mudanças no banco só por migração revisada pelo CI |
+| Qualquer papel pode definir `app.tenant_id` na própria transação | só a infraestrutura define o tenant (`ExecutorTenant`/`UnidadeDeTrabalhoTenant`); nenhum SQL vindo de entrada externa é executado; consultas sempre parametrizadas |
+| O papel `app` pode descobrir qual tenant usa um `phone_number_id` testando valores | só serve a quem já recebe o webhook; aceito como risco baixo |
 
 ## 7. Pendências que afetam o plano
 

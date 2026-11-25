@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Seceletesc.Api/Seceletesc.Api.csproj" />
+    <Project Path="src/Seceletesc.Aplicacao/Seceletesc.Aplicacao.csproj" />
+    <Project Path="src/Seceletesc.Dominio/Seceletesc.Dominio.csproj" />
+    <Project Path="src/Seceletesc.Infraestrutura/Seceletesc.Infraestrutura.csproj" />
+    <Project Path="src/Seceletesc.MotorIA/Seceletesc.MotorIA.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Seceletesc.Adversarial.Testes/Seceletesc.Adversarial.Testes.csproj" />
+    <Project Path="tests/Seceletesc.Arquitetura.Testes/Seceletesc.Arquitetura.Testes.csproj" />
+    <Project Path="tests/Seceletesc.Dominio.Testes/Seceletesc.Dominio.Testes.csproj" />
+    <Project Path="tests/Seceletesc.Integracao.Testes/Seceletesc.Integracao.Testes.csproj" />
+  </Folder>
+</Solution>

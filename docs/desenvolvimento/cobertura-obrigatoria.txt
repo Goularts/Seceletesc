@@ -1,0 +1,12 @@
+# Regras que precisam de testes ativos marcados com [Trait("Regra", "<ID>")], com o mínimo de métodos de teste.
+# Formato: <ID> <mínimo>  # comentário
+# IDs: INV-<n> (invariants.md), CTX-<nnn> e ADV-<nn> (matriz-rastreabilidade.md).
+#
+# Verificado por CoberturaRegrasTestes (contagem nos assemblies compilados; Skip e comentados não contam).
+# O CI compara este arquivo com o da branch de destino: nenhuma regra pode sair e nenhum mínimo pode cair.
+# Subir o mínimo ao acrescentar testes é bem-vindo.
+
+# F0 Fundação
+INV-10 13  # isolamento entre empresas (RLS, papéis, pool)
+INV-14 3   # restrições no backend: fronteiras entre projetos
+INV-15 5   # histórico append-only

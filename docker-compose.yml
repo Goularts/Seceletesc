@@ -1,0 +1,26 @@
+# Ambiente local de desenvolvimento. Não usar em produção.
+# O superusuário do container só provisiona os papéis (script em docker/postgres-init).
+# A aplicação e as migrações usam papéis sem superusuário (plano técnico, seção 4.5).
+# As senhas abaixo valem só para o container local; em produção, vêm de variáveis de ambiente.
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73
+    environment:
+      POSTGRES_DB: seceletesc
+      POSTGRES_USER: admin_local
+      POSTGRES_PASSWORD: ${SECELETESC_DB_SENHA_LOCAL:-somente-dev-local}
+      SECELETESC_DB_SENHA_LOCAL: ${SECELETESC_DB_SENHA_LOCAL:-somente-dev-local}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin_local -d seceletesc -h 127.0.0.1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "127.0.0.1:${SECELETESC_DB_PORTA:-55432}:5432"
+    volumes:
+      - seceletesc-pg:/var/lib/postgresql/data
+      - ./src/Seceletesc.Infraestrutura/Banco/Provisionamento/provisionar-papeis.sql:/docker-entrypoint-initdb.d/01-papeis.sql:ro
+      - ./docker/postgres-init/02-usuarios-locais.sh:/docker-entrypoint-initdb.d/02-usuarios-locais.sh:ro
+
+volumes:
+  seceletesc-pg:
