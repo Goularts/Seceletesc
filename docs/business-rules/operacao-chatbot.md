@@ -47,6 +47,18 @@ A orientação interna pode conter informação específica. Por isso ela não v
 - O humano pode assumir a conversa a qualquer momento, não só quando a IA pede.
 - A IA pode avisar o cliente sobre a transferência quando pertinente, sem prometer prazo ou disponibilidade não confirmados. O aviso passa pela mesma validação do backend e, como qualquer mensagem automática, não pode ser enviado se um humano já tiver assumido a conversa.
 
+### Fora da janela de 24h do WhatsApp
+
+- O sistema não envia templates pela API para retomar conversas.
+- Quando a conversa precisa de retomada fora da janela, o cliente recebe uma **marcação** no painel de acompanhamento, com o status da conversa e um resumo para consulta interna. O resumo não é enviado ao cliente e não contém dados protegidos (seção 3a).
+- A retomada é feita por um humano pelo celular (mesmo número de WhatsApp). Toda mensagem enviada pelo humano por fora da API coloca a conversa sob controle humano e é registrada no histórico.
+
+## 3a. Dados protegidos do cliente
+
+- Dados pessoais sensíveis enviados pelo cliente na conversa (ex.: CPF, documentos, dados de pagamento) são **criptografados** no banco e **nunca** são entregues ao motor de IA: ele recebe um marcador no lugar do dado.
+- Só humanos com permissão podem ver o dado original.
+- O telefone do cliente e o texto das conversas são armazenados no histórico e o texto é lido pela IA para responder (decisão do Victor, 2026-11-24). Os dados enviados à IA são usados só para o atendimento e para uso interno.
+
 ## 3. Validação das respostas (autoridade do backend)
 
 A IA não tem autoridade final sobre o envio. **Resposta gerada não é resposta autorizada.**

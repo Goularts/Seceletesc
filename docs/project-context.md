@@ -29,6 +29,8 @@ Resumo numerado das regras A e B: `docs/business-rules/invariants.md`.
 6a. Orientação interna não vira fonte direta: entra como sugestão (REV) e só é usada após avaliação e classificação humana.
 6b. Após bloqueio, nunca há nova geração; aguarda-se a supervisão.
 6c. Sem elementos interativos (botões, listas) nas mensagens ao cliente.
+6d. Sem templates pela API. Fora da janela de 24h, a conversa é marcada no painel (status + resumo interno) e retomada por humano pelo celular.
+6e. Telefone e texto das conversas ficam no histórico e a IA lê o texto. Dados sensíveis enviados pelo cliente são criptografados e nunca vão à IA.
 7. Aviso de transferência ao cliente é permitido quando pertinente, sem prometer prazo ou disponibilidade não confirmados.
 8. Histórico estruturado, auditável e persistente, separado da base de conhecimento publicada.
 9. A IA sugere conhecimento; só humano autorizado aprova, edita, rejeita, restringe ou revoga. Nada é promovido automaticamente.
@@ -60,5 +62,5 @@ Não presumir. Decisões puramente técnicas (estrutura da solução, estratégi
 - Mensagens que não são texto (mídia, áudio, reação, edição): a IA trata? (Padrão no plano: vão para supervisão.)
 - Esclarecimento: em quais assuntos é permitido e como é gerado? (Padrão no plano: desligado.)
 - Cliente identificado pelo telefone: como tratar número compartilhado ou reciclado?
-- Janela de 24h do WhatsApp: quais mensagens podem usar template aprovado pela Meta fora da janela, e quem pode dispará-las.
-- Dados de clientes: o Victor definiu que dados de clientes não são armazenados nem tratados pela IA (tratamento manual e humano, uso só interno). Falta delimitar o que conta como "dado do cliente", já que o atendimento precisa do número de telefone e do texto das mensagens, e o motor de IA precisa ler a mensagem para responder.
+- Categorias de dados protegidos (criptografados e ocultos da IA). Padrão técnico inicial: CPF, CNPJ, RG, cartão de pagamento, e-mail, CEP/endereço. O Victor pode ampliar.
+- Quem pode ver dados protegidos no painel.

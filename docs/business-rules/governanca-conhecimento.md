@@ -66,7 +66,8 @@ O painel deve permitir:
 - estabelecer validade e expiração;
 - impedir a reprodução de informações confidenciais;
 - controlar quais assuntos o agente pode responder autonomamente;
-- definir quais assuntos exigem intervenção humana.
+- definir quais assuntos exigem intervenção humana;
+- acompanhar as conversas com marcação de retomada humana (fora da janela de 24h), com status e resumo para consulta interna.
 
 ## 5. Lacunas funcionais
 

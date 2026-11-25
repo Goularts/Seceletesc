@@ -24,6 +24,8 @@ Estas invariantes regulam o **produto**, não o processo de desenvolvimento. Mud
 12. Instruções do cliente não alteram regras, permissões ou comportamento do chatbot.
 13. O chatbot não se apresenta falsamente como humano.
 14. Estas restrições são impostas pelo backend da aplicação, não apenas por prompts.
+23. Dados pessoais sensíveis enviados pelo cliente são criptografados no banco e nunca entregues ao motor de IA.
+24. O sistema não envia templates pela API; retomada fora da janela de 24h é feita por humano, e toda mensagem humana enviada por fora da API coloca a conversa sob controle humano.
 
 ## B. Conhecimento
 
@@ -47,4 +49,4 @@ Estas invariantes regulam o **produto**, não o processo de desenvolvimento. Mud
 
 ## Histórico
 
-Reorganizado em 2026-11-24 por decisão do Victor (separação A/B/C). Correspondência com a numeração anterior: 1→1, 2→2, 3→3, 4→4, 5→5, 6→15, 7→16, 8→17, 9→19, 10→11, 11→10, 12→22. Acrescentadas: 6, 7, 8, 9, 12, 13, 14, 18, 20, 21.
+Reorganizado em 2026-11-24 por decisão do Victor (separação A/B/C). Correspondência com a numeração anterior: 1→1, 2→2, 3→3, 4→4, 5→5, 6→15, 7→16, 8→17, 9→19, 10→11, 11→10, 12→22. Acrescentadas: 6, 7, 8, 9, 12, 13, 14, 18, 20, 21. Em 2026-11-24 (mais tarde): 23 e 24, da parte A, numeradas no fim para não renumerar.

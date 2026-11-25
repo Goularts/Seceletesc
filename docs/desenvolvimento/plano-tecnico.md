@@ -98,7 +98,8 @@ O modelo só vê o que pode aparecer numa resposta automática. Assim, o validad
 
 - Histórico: só **desta** conversa.
 - Conhecimento: só itens **aprovados**, **vigentes**, com escopo desta empresa/cliente/proposta/atendimento **e** classificação permitida para resposta automática pela política vigente. INT, NEG, EXC e RES ficam fora por padrão.
-- **Minimização de dados** (já na F1, configurável): por padrão, nenhum conhecimento CLI e nenhum telefone ou identificador do cliente vão ao modelo. Depende da delimitação pendente de "dado do cliente".
+- **Dados protegidos** (F1): na entrada, um detector identifica dados sensíveis (CPF, CNPJ, RG, cartão com verificação Luhn, e-mail, CEP/endereço; lista configurável). O valor original é gravado **criptografado** (AES-GCM, chave fora do banco: user-secrets em dev, cofre de chaves em produção) e o texto que segue no pipeline e vai ao modelo contém só um marcador (`[DADO PROTEGIDO:CPF]`). O papel `app` não tem a chave de leitura; só a API de supervisão, para usuário com permissão. Limite: o que o detector não reconhecer segue como texto. O conjunto de testes de detecção cresce com casos reais.
+- Telefone e identificadores do cliente não vão ao modelo (minimização).
 - Campos do WhatsApp fora do texto (`profile.name`, legendas, mensagens citadas) não vão ao modelo, ou vão marcados como não confiáveis.
 - O montador registra no histórico quais itens (id + versão) entregou ao modelo.
 
@@ -180,7 +181,8 @@ Limite assumido: pertinência fina e tom são julgamento do modelo. Esse risco �
 - `wamid` com `UNIQUE` persistente, o que dá idempotência contra reenvio.
 - Eventos de status separados das mensagens; ordenação por timestamp; processamento serializado por conversa.
 - Mensagens que não são texto (mídia, áudio, reação, edição): por padrão vão para supervisão, e a IA trata só texto. Lacuna funcional registrada.
-- Templates só com texto, enviados pelo mesmo gateway.
+- **Sem templates pela API** (decisão do Victor). Fora da janela de 24h, o gateway bloqueia, a conversa recebe a marcação "retomada humana" e aparece no painel com status e resumo interno.
+- **Resposta humana pelo celular** exige que o número opere em modo de coexistência (WhatsApp Business App + Cloud API). As mensagens enviadas pelo app chegam como eventos de eco no webhook: cada eco é registrado no histórico e coloca a conversa em `Humano` imediatamente. **Verificar na F4** a disponibilidade da coexistência para o número e se o eco cobre todos os casos; sem isso, a resposta humana teria de passar pela API.
 
 ### 4.9 API de supervisão
 
@@ -214,11 +216,11 @@ Cada fase termina com CI verde, os testes de regra da fase cobertos e uma entrad
 | Fase | Entrega | Depende do Victor |
 |---|---|---|
 | **F0 Fundação** | solução; CI endurecido; Docker Compose; papéis do banco; RLS com `SET LOCAL` e testes de pool; histórico append-only; checagem automática de cobertura das regras; gitleaks | ativar secret scanning e proteção da branch (ou autorizar instalar o `gh`) |
-| **F1 Núcleo** | modelo de conhecimento e política versionada; montador de contexto com minimização; máquina de estados; validador; outbox, worker e restrições; gateway simulado; adversariais ADV-01 a ADV-23 com motor de IA simulado | — |
+| **F1 Núcleo** | modelo de conhecimento e política versionada; dados protegidos (detecção + criptografia + marcador); montador de contexto com minimização; máquina de estados; validador; outbox, worker e restrições; gateway simulado; adversariais ADV-01 a ADV-23 com motor de IA simulado | — |
 | **F2 Supervisão (API)** | assumir, responder, orientar (→ REV), liberar, editar política; checagem de tenant e testes de IDOR | autenticação e usuários (em dev, chave de API) |
 | **F3 Conhecimento (API)** | ciclo de vida completo | papéis de aprovação (em dev, papel único) |
-| **F4 WhatsApp real** | webhook, envio, janela de 24h, templates | app Meta + número de teste (**infra externa**) |
-| **F5 Motor de IA** | adaptador do provedor, avaliação | **bloqueada** até delimitar "dado do cliente" e escolher o provedor |
+| **F4 WhatsApp real** | webhook, envio, janela de 24h + marcação de retomada, coexistência e ecos do app | app Meta + número de teste (**infra externa**) |
+| **F5 Motor de IA** | adaptador do provedor, resumo interno da conversa, avaliação | escolha do provedor |
 | **F6 Painel** | interface de supervisão, conhecimento e política | tecnologia do front, usuários |
 | **F7 Piloto** | primeira empresa | assuntos autônomos, textos fixos, templates |
 
@@ -239,9 +241,9 @@ F0 a F3 não dependem de decisão pendente nem de infraestrutura externa. Todas 
 
 Ver `docs/project-context.md`. Afetam diretamente:
 
-- F1: delimitação de "dado do cliente". A minimização começa no máximo e é relaxada só com decisão.
-- F4: quem pode disparar templates fora da janela de 24h.
-- F5: provedor de IA.
+- F1: categorias de dados protegidos (padrão técnico definido; o Victor pode ampliar).
+- F4: coexistência do número (app + API).
+- F5: provedor de IA (desbloqueada: dados delimitados).
 - F2, F3 e F6: autenticação, usuários e papéis.
 - F7: assuntos autônomos e textos fixos.
 - Lacunas com padrão conservador já definido no plano (o Victor pode mudar):
