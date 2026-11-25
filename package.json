@@ -1,0 +1,13 @@
+{
+  "name": "seceletesc-ferramentas",
+  "private": true,
+  "description": "Ferramentas de desenvolvimento (portão de mudanças com Ruflo). A aplicação é .NET; isto não vai para produção.",
+  "scripts": {
+    "portao:prova": "node ferramentas/portao/prova.cjs",
+    "portao:testes": "node ferramentas/portao/testes-unitarios.cjs",
+    "portao:testar": "node ferramentas/portao/testar.cjs"
+  },
+  "devDependencies": {
+    "ruflo": "3.80.6"
+  }
+}

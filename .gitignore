@@ -10,6 +10,7 @@ TestResults/
 packages/
 
 # Segredos / config local
+.local/
 .env
 .env.*
 !.env.example

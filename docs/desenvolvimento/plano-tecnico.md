@@ -269,6 +269,7 @@ F0 a F3 não dependem de decisão pendente nem de infraestrutura externa. Todas 
 
 | Fase | Situação |
 |---|---|
+| F4.5 Auditoria e Ruflo | decisões da F4 implementadas (conciliação fora de ordem, atraso configurável, reações, reavaliação de conhecimento, endereço institucional); portão de mudanças com Ruflo nos hooks (docs/desenvolvimento/portao.md); demonstração local; OpenAPI; guia do administrador. Revisão em revisoes/2026-11-25-f4-5.md |
 | F4 WhatsApp (preparação) | implementada sem número real: webhook assinado, fila durável da IA, eco do app, status de entrega, gateway real desligado. Revisão em revisoes/2026-11-25-f4.md. Requisitos externos em docs/setup/whatsapp-integracao.md |
 | Pós-F3 | implementada: identidade comprovada no banco, atribuição de conversas, visibilidade por papel, piso da política, e-mail institucional, validade máxima, HTTPS. Revisão em revisoes/2026-11-25-pos-f3.md |
 | F3 Conhecimento e papéis | implementada: papéis no backend e no banco, ciclo de vida versionado e auditado, limites comerciais, dados protegidos proporcionais, pendência de retomada. Revisão em revisoes/2026-11-25-f3.md |

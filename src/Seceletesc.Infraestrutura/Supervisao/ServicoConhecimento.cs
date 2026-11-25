@@ -13,7 +13,8 @@ namespace Seceletesc.Infraestrutura.Supervisao;
 public sealed record PermissoesConhecimento(IReadOnlyList<string>? Classificacoes, string? EscopoTipo, Guid? EscopoRef, DateTimeOffset? ValidoAte);
 
 public sealed record ResumoConhecimento(
-    Guid Id, string Assunto, string Status, int VersaoVigente, int UltimaVersao, bool TemEdicaoPendente, DateTimeOffset CriadoEm);
+    Guid Id, string Assunto, string Status, int VersaoVigente, int UltimaVersao, bool TemEdicaoPendente, DateTimeOffset CriadoEm,
+    bool PrecisaReavaliacao = false);
 
 public sealed record VersaoConhecimento(
     int Versao, string Conteudo, IReadOnlyList<string> Classificacoes, string EscopoTipo, Guid? EscopoRef, DateTimeOffset? ValidoAte,
@@ -108,16 +109,24 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
         }, ct).ConfigureAwait(false);
     }
 
-    public Task<IReadOnlyList<ResumoConhecimento>> ListarAsync(UsuarioSupervisao usuario, string? status, CancellationToken ct = default)
+    public Task<IReadOnlyList<ResumoConhecimento>> ListarAsync(UsuarioSupervisao usuario, string? status, CancellationToken ct = default) =>
+        ListarAsync(usuario, status, false, ct);
+
+    /// <summary>Lista o conhecimento visível ao usuário. Com <paramref name="soReavaliacao"/>, só o que aguarda reavaliação.</summary>
+    public Task<IReadOnlyList<ResumoConhecimento>> ListarAsync(UsuarioSupervisao usuario, string? status, bool soReavaliacao, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(usuario);
         return _executor.ExecutarAutenticadoAsync<IReadOnlyList<ResumoConhecimento>>(usuario.TenantId, usuario.Credencial, async (c, tx, t) =>
         {
             await using var cmd = RepositorioNucleo.Cmd(c, tx, SelectResumo + " where (@s::text is null or i.status = @s::text) and " + FiltroVisibilidade
-                + " order by i.criado_em desc limit 500");
+                + " order by i.criado_em desc limit @limite");
             cmd.Parameters.AddWithValue("s", (object?)status ?? DBNull.Value);
+            // A lista de reavaliação filtra antes de limitar (revisão da F4.5, G5): nenhum item antigo fica escondido.
+            cmd.Parameters.AddWithValue("limite", soReavaliacao ? 100_000 : 500);
             AdicionarParametrosVisibilidade(cmd, usuario);
-            return await LerResumosAsync(cmd, t).ConfigureAwait(false);
+            var politica = await PoliticaAsync(c, tx, usuario.TenantId, t).ConfigureAwait(false);
+            var lista = await LerResumosAsync(cmd, politica, t).ConfigureAwait(false);
+            return soReavaliacao ? lista.Where(i => i.PrecisaReavaliacao).ToList() : lista;
         }, ct);
     }
 
@@ -131,7 +140,7 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
             {
                 cmd.Parameters.AddWithValue("id", itemId);
                 AdicionarParametrosVisibilidade(cmd, usuario);
-                resumo = (await LerResumosAsync(cmd, t).ConfigureAwait(false)).SingleOrDefault();
+                resumo = (await LerResumosAsync(cmd, await PoliticaAsync(c, tx, usuario.TenantId, t).ConfigureAwait(false), t).ConfigureAwait(false)).SingleOrDefault();
             }
 
             if (resumo is null)
@@ -331,7 +340,15 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
                 return ResultadoOperacao.Invalida(pessoal);
             }
 
-            if (ValidadeForaDoPrazo(classificacoes, permissoes.ValidoAte, politica) is { } prazo)
+            // Mesma referência de tempo do uso: o prazo conta a partir da aprovação carimbada pelo banco (revisão da F4.5, G3).
+            DateTimeOffset agoraDoBanco;
+            await using (var agora = RepositorioNucleo.Cmd(c, tx, "select now()"))
+            {
+                var valor = await agora.ExecuteScalarAsync(t).ConfigureAwait(false);
+                agoraDoBanco = valor is DateTimeOffset d ? d : new DateTimeOffset(DateTime.SpecifyKind((DateTime)valor!, DateTimeKind.Utc));
+            }
+
+            if (ValidadeForaDoPrazo(classificacoes, permissoes.ValidoAte, politica, agoraDoBanco) is { } prazo)
             {
                 return ResultadoOperacao.Invalida(prazo);
             }
@@ -502,14 +519,24 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
     {
         foreach (var o in DetectorDadosProtegidos.Mascarar(texto).Ocorrencias)
         {
-            if (o.Categoria != CategoriaDadoProtegido.Email)
+            if (o.Categoria == CategoriaDadoProtegido.Email)
+            {
+                if (!politica.EhEmailInstitucional(o.Valor))
+                {
+                    return "e-mail fora da lista institucional da política é dado pessoal e não entra em conhecimento";
+                }
+            }
+            else if (o.Categoria == CategoriaDadoProtegido.Cep)
+            {
+                // Endereço institucional pode ser conhecimento público aprovado; endereço de cliente, não (decisão do Victor).
+                if (!politica.EhCepInstitucional(o.Valor))
+                {
+                    return "CEP fora da lista institucional da política é endereço particular e não entra em conhecimento";
+                }
+            }
+            else
             {
                 return $"dado pessoal ({o.Categoria}) não entra em conhecimento";
-            }
-
-            if (!politica.EhEmailInstitucional(o.Valor))
-            {
-                return "e-mail fora da lista institucional da política é dado pessoal e não entra em conhecimento";
             }
         }
 
@@ -517,7 +544,7 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
     }
 
     /// <summary>Prazo máximo de validade por classificação, definido na política (decisão 28).</summary>
-    private string? ValidadeForaDoPrazo(IReadOnlySet<Classificacao> classificacoes, DateTimeOffset? validoAte, PoliticaTenant politica)
+    private static string? ValidadeForaDoPrazo(IReadOnlySet<Classificacao> classificacoes, DateTimeOffset? validoAte, PoliticaTenant politica, DateTimeOffset aprovacao)
     {
         var prazos = classificacoes.Where(politica.ValidadeMaximaDias.ContainsKey).Select(c => (c, dias: politica.ValidadeMaximaDias[c])).ToList();
         if (prazos.Count == 0)
@@ -526,7 +553,7 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
         }
 
         var (classificacao, dias) = prazos.MinBy(x => x.dias);
-        return validoAte is { } v && v <= relogio.GetUtcNow().AddDays(dias)
+        return validoAte is { } v && v <= aprovacao.AddDays(dias)
             ? null
             : $"a política limita a validade de {classificacao} a {dias} dias";
     }
@@ -700,12 +727,21 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
 
     private const string SelectResumo = """
         select i.id, i.assunto, i.status, i.versao_vigente, u.versao, i.criado_em,
-               exists (select 1 from rejeicoes_versao r where r.item_id = i.id and r.versao = u.versao)
+               exists (select 1 from rejeicoes_versao r where r.item_id = i.id and r.versao = u.versao),
+               vg.classificacoes, vg.valido_ate, vg.aprovada_em
           from itens_conhecimento i
           cross join lateral (select max(v.versao) as versao from versoes_conhecimento v where v.item_id = i.id) u
+          left join versoes_conhecimento vg on vg.item_id = i.id and vg.versao = i.versao_vigente and vg.aprovada_por is not null
         """;
 
-    private static async Task<List<ResumoConhecimento>> LerResumosAsync(NpgsqlCommand cmd, CancellationToken ct)
+    /// <summary>Itens aprovados cuja validade passa do prazo da política informada (para registrar a reavaliação).</summary>
+    internal static async Task<List<Guid>> ItensParaReavaliarAsync(NpgsqlConnection c, NpgsqlTransaction tx, PoliticaTenant politica, CancellationToken ct)
+    {
+        await using var cmd = RepositorioNucleo.Cmd(c, tx, SelectResumo + " where i.status = 'Aprovado'");
+        return (await LerResumosAsync(cmd, politica, ct).ConfigureAwait(false)).Where(i => i.PrecisaReavaliacao).Select(i => i.Id).ToList();
+    }
+
+    private static async Task<List<ResumoConhecimento>> LerResumosAsync(NpgsqlCommand cmd, PoliticaTenant politica, CancellationToken ct)
     {
         var lista = new List<ResumoConhecimento>();
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -714,8 +750,12 @@ public sealed class ServicoConhecimento(NpgsqlDataSource dataSourceSupervisao, T
             var status = r.GetString(2);
             var vigente = r.GetInt32(3);
             var ultima = r.IsDBNull(4) ? vigente : r.GetInt32(4);
+            var reavaliar = status == "Aprovado" && !r.IsDBNull(7)
+                && ElegibilidadeConhecimento.ExcedeValidadeDaPolitica(
+                    new HashSet<Classificacao>(r.GetFieldValue<string[]>(7).Select(Enum.Parse<Classificacao>)),
+                    r.IsDBNull(8) ? null : r.GetFieldValue<DateTimeOffset>(8), r.IsDBNull(9) ? null : r.GetFieldValue<DateTimeOffset>(9), politica);
             lista.Add(new ResumoConhecimento(r.GetGuid(0), r.GetString(1), status, vigente, ultima,
-                status == "Aprovado" && ultima > vigente && !r.GetBoolean(6), r.GetFieldValue<DateTimeOffset>(5)));
+                status == "Aprovado" && ultima > vigente && !r.GetBoolean(6), r.GetFieldValue<DateTimeOffset>(5), reavaliar));
         }
 
         return lista;

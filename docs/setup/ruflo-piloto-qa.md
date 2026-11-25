@@ -58,4 +58,4 @@ Decisão possível em cada revisão: manter, ajustar (ex.: habilitar memória pe
 
 ### Revisões
 
-_Nenhuma ainda._
+**2026-11-25 (F4.5), decisão do Victor: manter o Ruflo e integrá-lo de fato.** Diagnóstico: instalado no modo mínimo, sem hooks, sem memória persistente em uso (0 registros) e chamado só à mão; por isso não participou das últimas fases. Ajuste: portão de mudanças com hooks do Claude Code (SessionStart, UserPromptSubmit, PreToolUse, Stop) que usam a memória persistente do Ruflo como complemento do Git. Prova verificável: `node ferramentas/portao/prova.cjs` (11 verificações) e disparos reais registrados em `.claude-flow/data/portao.log`. Limitação medida: a busca semântica local do Ruflo é fraca para paráfrases distantes; o Git cobre por termos e pelo mapa de impacto. Detalhes: `docs/desenvolvimento/portao.md`.

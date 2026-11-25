@@ -63,7 +63,8 @@ public sealed record FonteConhecimento(
     EscopoConhecimento Escopo,
     DateTimeOffset? ValidoAte,
     string Origem,
-    bool EhVersaoVigente = true)
+    bool EhVersaoVigente = true,
+    DateTimeOffset? AprovadaEm = null)
 {
     public ChaveFonte Chave => new(ItemId, Versao);
 }

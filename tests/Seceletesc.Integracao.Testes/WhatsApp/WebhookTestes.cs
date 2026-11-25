@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
@@ -305,23 +306,185 @@ public sealed class WebhookTestes(BancoFixture banco)
     // ------------------------------------------------------------------ revisão da F4 (revisoes/2026-11-25-f4.md)
 
     [Fact]
-    [Trait("Regra", "INV-3")]
     [Trait("Regra", "INV-15")]
-    public async Task G1_mensagem_antiga_que_chega_depois_da_mais_nova_ja_respondida_vai_para_supervisao()
+    [Trait("Regra", "INV-6")]
+    public async Task Mensagem_fora_de_ordem_e_reconciliada_com_o_historico_completo_e_registrada()
     {
+        // Decisão do Victor (2026-11-25): reconciliar quando possível. A mensagem enviada antes chega depois da resposta
+        // à mais nova: é tratada agora, com a pergunta e a resposta já dadas no histórico, e passa pela validação.
         await using var amb = await AmbientePipeline.CriarAsync(banco);
         await amb.ConhecimentoAsync("horario", Horario);
         var motor = new MotorFalso(ctx => Task.FromResult(MotorFalso.Rascunho(ctx, Horario, "horario")));
         var orquestrador = amb.Orquestrador(motor);
         var nova = await orquestrador.ProcessarAsync(amb.Mensagem("Qual o horário?", em: amb.Relogio.Agora));
 
-        // A Meta entrega fora de ordem: a mensagem enviada antes chega depois da resposta à mais nova.
-        var antiga = await orquestrador.ProcessarAsync(amb.Mensagem("Oi, bom dia", em: amb.Relogio.Agora.AddSeconds(-30)));
+        var antiga = await orquestrador.ProcessarAsync(amb.Mensagem("E no sábado?", em: amb.Relogio.Agora.AddSeconds(-30)));
 
         Assert.Equal(ResultadoProcessamento.RespostaEnfileirada, nova);
+        Assert.Equal(ResultadoProcessamento.RespostaEnfileirada, antiga);
+        var ctx = motor.Contextos[^1];
+        Assert.Equal("E no sábado?", ctx.MensagemAResponder);                       // o motor sabe qual responder
+        Assert.Contains(ctx.Historico, m => m.TextoMascarado == "Qual o horário?");
+        Assert.Contains(ctx.Historico, m => m.Autor == "atendimento" && m.TextoMascarado == Horario); // resposta já dada, ainda na fila
+        Assert.Equal(1L, await amb.ContarAsync($"eventos_historico where tenant_id = '{amb.TenantId}' and tipo = 'mensagem_fora_de_ordem'"));
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-3")]
+    [Trait("Regra", "INV-7")]
+    public async Task Mensagem_fora_de_ordem_sem_resposta_valida_vai_para_supervisao()
+    {
+        await using var amb = await AmbientePipeline.CriarAsync(banco);
+        await amb.ConhecimentoAsync("horario", Horario);
+        var chamadas = 0;
+        var motor = new MotorFalso(ctx => Task.FromResult(++chamadas == 1 ? MotorFalso.Rascunho(ctx, Horario, "horario") : "{}"));
+        var orquestrador = amb.Orquestrador(motor);
+        Assert.Equal(ResultadoProcessamento.RespostaEnfileirada, await orquestrador.ProcessarAsync(amb.Mensagem("Qual o horário?", em: amb.Relogio.Agora)));
+
+        // Ambígua (o motor não sustenta uma resposta): bloqueio e supervisão, como qualquer bloqueio.
+        var antiga = await orquestrador.ProcessarAsync(amb.Mensagem("Aquilo que combinamos vale?", em: amb.Relogio.Agora.AddSeconds(-30)));
+
         Assert.Equal(ResultadoProcessamento.Transferida, antiga);
         Assert.Equal("TransferenciaPendente", await amb.EstadoConversaAsync());
-        Assert.Equal(1L, await amb.ContarAsync($"eventos_historico where tenant_id = '{amb.TenantId}' and tipo = 'transferencia_iniciada' and dados->>'motivo' = 'mensagem_fora_de_ordem'"));
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-3")]
+    [Trait("Regra", "INV-6")]
+    public async Task Mensagem_mais_nova_respondida_durante_a_geracao_manda_a_antiga_para_supervisao()
+    {
+        // Revisão da F4.5 (G1): A está sendo gerada quando B chega e é respondida inteira. A resposta de A não viu B.
+        await using var amb = await AmbientePipeline.CriarAsync(banco);
+        await amb.ConhecimentoAsync("horario", Horario);
+        ProcessadorMensagemRecebida? orquestrador = null;
+        var chamadas = 0;
+        var motor = new MotorFalso(async ctx =>
+        {
+            if (++chamadas == 1)
+            {
+                await orquestrador!.ProcessarAsync(amb.Mensagem("Qual o horário?", em: amb.Relogio.Agora.AddSeconds(5)));
+            }
+
+            return MotorFalso.Rascunho(ctx, Horario, "horario");
+        });
+        orquestrador = amb.Orquestrador(motor);
+
+        var a = await orquestrador.ProcessarAsync(amb.Mensagem("Oi, tudo bem?", em: amb.Relogio.Agora));
+
+        Assert.Equal(ResultadoProcessamento.Transferida, a);
+        Assert.Equal(1L, await amb.ContarAsync($"decisoes_envio where tenant_id = '{amb.TenantId}' and tipo = 'resposta'"));
+        Assert.Equal(1L, await amb.ContarAsync($"eventos_historico where tenant_id = '{amb.TenantId}' and tipo = 'transferencia_iniciada' and dados->>'motivo' = 'mensagem_mais_nova_respondida_durante_a_geracao'"));
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-15")]
+    public async Task Reacao_nao_desfaz_o_agrupamento_nem_vai_ao_motor()
+    {
+        // Revisão da F4.5 (G2, S7): texto, texto e reação: uma única resposta, sem falso "fora de ordem".
+        await using var amb = await AmbientePipeline.CriarAsync(banco);
+        await amb.ConhecimentoAsync("horario", Horario);
+        var numero = await NumeroAsync(amb);
+        await using var api = new ApiWhatsApp(banco, amb.Relogio);
+        await PostarAssinadoAsync(api, Texto(numero, "wamid.r1", "Oi", amb.Relogio.Agora));
+        await PostarAssinadoAsync(api, Texto(numero, "wamid.r2", "Qual o horário?", amb.Relogio.Agora.AddSeconds(5)));
+        await PostarAssinadoAsync(api, NaoTexto(numero, "wamid.r3", "reaction", amb.Relogio.Agora.AddSeconds(10)));
+        var motor = new MotorFalso(ctx => Task.FromResult(MotorFalso.Rascunho(ctx, Horario, "horario")));
+        var trabalhador = Trabalhador(amb, motor);
+
+        var primeira = await trabalhador.ProcessarProximoAsync();
+        var segunda = await trabalhador.ProcessarProximoAsync();
+
+        Assert.Equal(ResultadoProcessamento.SemAcaoDaIa, primeira);
+        Assert.Equal(ResultadoProcessamento.RespostaEnfileirada, segunda);
+        Assert.Equal(0L, await amb.ContarAsync($"eventos_historico where tenant_id = '{amb.TenantId}' and tipo = 'mensagem_fora_de_ordem'"));
+        Assert.DoesNotContain(motor.Contextos.Single().Historico, m => m.TextoMascarado.Contains("reaction", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-3")]
+    [Trait("Regra", "INV-23")]
+    public async Task Falha_de_deteccao_em_mensagem_agrupada_vai_para_supervisao()
+    {
+        // Revisão da F4.5 (G4): o pedido não some dentro da resposta à mensagem seguinte.
+        await using var amb = await AmbientePipeline.CriarAsync(banco);
+        await amb.ConhecimentoAsync("horario", Horario);
+        var motor = new MotorFalso(ctx => Task.FromResult(MotorFalso.Rascunho(ctx, Horario, "horario")));
+        var orquestrador = amb.Orquestrador(motor);
+        var (_, a) = await orquestrador.RegistrarAsync(amb.Mensagem("Segue meu documento", em: amb.Relogio.Agora));
+        await orquestrador.RegistrarAsync(amb.Mensagem("Qual o horário?", em: amb.Relogio.Agora.AddSeconds(5)));
+        await amb.Banco.ConsultarComoAdminAsync($"update fila_ia set deteccao_falhou = true where mensagem_id = '{a}'");
+
+        var r = await orquestrador.TratarAsync(amb.TenantId, a!.Value);
+
+        Assert.Equal(ResultadoProcessamento.Transferida, r);
+        Assert.Equal("TransferenciaPendente", await amb.EstadoConversaAsync());
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-3")]
+    public async Task Limite_de_escalonamento_menor_da_politica_vale_sobre_o_padrao()
+    {
+        // Revisão da F4.5 (G7): a empresa define 3 minutos; 5 minutos de atraso escalonam (o padrão seria 15).
+        await using var amb = await AmbientePipeline.CriarAsync(banco);
+        await amb.ConhecimentoAsync("horario", Horario);
+        await using var api = amb.Api();
+        await api.Cliente(amb.ChaveSupervisor).PutAsJsonAsync("/supervisao/politica", new
+        {
+            versaoEsperada = 1,
+            conteudo = new { assuntosAutonomos = new[] { "horario" }, atrasoAvisoMinutos = 1, atrasoEscalonamentoMinutos = 3 },
+        });
+        var motor = new MotorFalso(ctx => Task.FromResult(MotorFalso.Rascunho(ctx, Horario, "horario")));
+        var orquestrador = amb.Orquestrador(motor);
+        var (_, mensagem) = await orquestrador.RegistrarAsync(amb.Mensagem("Qual o horário?"));
+        amb.Relogio.Agora += TimeSpan.FromMinutes(5);
+
+        var r = await orquestrador.TratarAsync(amb.TenantId, mensagem!.Value);
+
+        Assert.Equal(ResultadoProcessamento.Transferida, r);
+        Assert.Empty(motor.Contextos);
+        Assert.Equal(1L, await amb.ContarAsync($"eventos_historico where tenant_id = '{amb.TenantId}' and tipo = 'transferencia_iniciada' and dados->>'motivo' = 'mensagem_atrasada_escalonada'"));
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-15")]
+    public async Task Reacao_e_registrada_sem_transferir_nem_acionar_a_IA()
+    {
+        await using var amb = await AmbientePipeline.CriarAsync(banco);
+        await amb.ConversaAtendidaPelaIaAsync(Horario);
+        var ultimaDoCliente = await amb.ConsultarAsync<DateTime?>("select ultima_mensagem_cliente_em from conversas where tenant_id = @tenant");
+        var numero = await NumeroAsync(amb);
+        await using var api = new ApiWhatsApp(banco, amb.Relogio);
+
+        await PostarAssinadoAsync(api, NaoTexto(numero, "wamid.reacao", "reaction", amb.Relogio.Agora.AddMinutes(1)));
+
+        Assert.Equal("Automatico", await amb.EstadoConversaAsync());
+        Assert.Equal(1L, await amb.ContarAsync($"eventos_historico where tenant_id = '{amb.TenantId}' and tipo = 'reacao_registrada'"));
+        Assert.Equal(0L, await amb.ContarAsync($"fila_ia where tenant_id = '{amb.TenantId}'"));
+        Assert.Equal(ultimaDoCliente, await amb.ConsultarAsync<DateTime?>("select ultima_mensagem_cliente_em from conversas where tenant_id = @tenant"));
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-15")]
+    public async Task Atraso_acima_do_aviso_e_registrado_e_o_limite_de_escalonamento_e_da_politica()
+    {
+        await using var amb = await AmbientePipeline.CriarAsync(banco);
+        await amb.ConhecimentoAsync("horario", Horario);
+        await using var api = amb.Api();
+        var publicar = await api.Cliente(amb.ChaveSupervisor).PutAsJsonAsync("/supervisao/politica", new
+        {
+            versaoEsperada = 1,
+            conteudo = new { assuntosAutonomos = new[] { "horario", "precos" }, atrasoAvisoMinutos = 2, atrasoEscalonamentoMinutos = 30 },
+        });
+        var motor = new MotorFalso(ctx => Task.FromResult(MotorFalso.Rascunho(ctx, Horario, "horario")));
+        var orquestrador = amb.Orquestrador(motor);
+        var (_, mensagem) = await orquestrador.RegistrarAsync(amb.Mensagem("Qual o horário?"));
+        amb.Relogio.Agora += TimeSpan.FromMinutes(20); // acima do padrão (15), abaixo do limite desta empresa (30)
+
+        var r = await orquestrador.TratarAsync(amb.TenantId, mensagem!.Value);
+
+        Assert.Equal(System.Net.HttpStatusCode.OK, publicar.StatusCode);
+        Assert.Equal(ResultadoProcessamento.RespostaEnfileirada, r);
+        Assert.Equal(1L, await amb.ContarAsync($"eventos_historico where tenant_id = '{amb.TenantId}' and tipo = 'mensagem_atrasada'"));
     }
 
     [Fact]

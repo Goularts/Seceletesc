@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Npgsql;
+using Seceletesc.Dominio.DadosProtegidos;
 using NpgsqlTypes;
 using Seceletesc.Dominio.Conhecimento;
 using Seceletesc.Dominio.Contratos;
@@ -116,7 +117,7 @@ internal static class RepositorioNucleo
     private const string SelectFonte = """
         select v.item_id, v.versao, v.tenant_id, i.assunto, v.conteudo, i.status, v.classificacoes,
                v.escopo_tipo, v.escopo_ref, v.valido_ate, v.origem,
-               (v.versao = i.versao_vigente and v.aprovada_por is not null) as vigente
+               (v.versao = i.versao_vigente and v.aprovada_por is not null) as vigente, v.aprovada_em
           from versoes_conhecimento v join itens_conhecimento i on i.id = v.item_id
         """;
 
@@ -154,22 +155,44 @@ internal static class RepositorioNucleo
 
     public static async Task<List<MensagemContexto>> ListarHistoricoAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid conversaId, int limite, CancellationToken ct)
     {
+        // Reações não são fala do cliente. Respostas já aprovadas que ainda estão na fila de envio entram como
+        // atendimento (a mensagem fora de ordem precisa ver o que já foi respondido), sempre mascaradas: dado
+        // protegido nunca chega ao motor (invariante 23).
         await using var cmd = Cmd(c, tx, """
-            select direcao, texto_mascarado, ocorrida_em from (
-              select direcao, texto_mascarado, ocorrida_em from mensagens
-               where conversa_id = @c order by ocorrida_em desc limit @lim) m
-             order by ocorrida_em
+            select direcao, texto, em from (
+              select direcao, texto_mascarado as texto, ocorrida_em as em from mensagens
+               where conversa_id = @c and not (direcao = 'entrada' and texto_mascarado = @reacao)
+              union all
+              select 'fila', texto, criada_em from outbox
+               where conversa_id = @c and status in ('pendente', 'enviando')
+               order by em desc limit @lim) h
+             order by em
             """);
         cmd.Parameters.AddWithValue("c", conversaId);
         cmd.Parameters.AddWithValue("lim", limite);
+        cmd.Parameters.AddWithValue("reacao", ProcessadorMensagemRecebida.TextoReacao);
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         var lista = new List<MensagemContexto>();
         while (await r.ReadAsync(ct).ConfigureAwait(false))
         {
-            lista.Add(new MensagemContexto(r.GetString(0) == "entrada" ? "cliente" : "atendimento", r.GetString(1), r.GetFieldValue<DateTimeOffset>(2)));
+            var direcao = r.GetString(0);
+            var texto = direcao == "fila" ? MascararOuReter(r.GetString(1)) : r.GetString(1);
+            lista.Add(new MensagemContexto(direcao == "entrada" ? "cliente" : "atendimento", texto, r.GetFieldValue<DateTimeOffset>(2)));
         }
 
         return lista;
+    }
+
+    private static string MascararOuReter(string texto)
+    {
+        try
+        {
+            return DetectorDadosProtegidos.Mascarar(texto).Texto;
+        }
+        catch (System.Text.RegularExpressions.RegexMatchTimeoutException)
+        {
+            return "[CONTEÚDO RETIDO]"; // falha fechada: na dúvida, nada do texto vai ao motor
+        }
     }
 
     public static async Task InserirDecisaoAsync(
@@ -265,7 +288,8 @@ internal static class RepositorioNucleo
                 new EscopoConhecimento(Enum.Parse<TipoEscopo>(r.GetString(7)), r.IsDBNull(8) ? null : r.GetGuid(8)),
                 r.IsDBNull(9) ? null : r.GetFieldValue<DateTimeOffset>(9),
                 r.GetString(10),
-                r.GetBoolean(11)));
+                r.GetBoolean(11),
+                r.IsDBNull(12) ? null : r.GetFieldValue<DateTimeOffset>(12)));
         }
 
         return fontes;

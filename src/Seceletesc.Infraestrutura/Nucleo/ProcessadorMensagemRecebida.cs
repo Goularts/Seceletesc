@@ -53,10 +53,8 @@ public sealed class ProcessadorMensagemRecebida(
     /// <summary>Tentativas de tratamento (lease vencido, erro) antes de desistir e acionar a supervisão.</summary>
     public const int MaximoTentativas = 3;
 
-    /// <summary>Padrão: mensagem parada na fila há mais tempo que isso não é respondida pela IA; vai para supervisão.</summary>
+    /// <summary>Padrão de escalonamento por atraso (a política de cada empresa define o seu; ver PoliticaTenant).</summary>
     public static readonly TimeSpan IdadeMaximaNaFilaPadrao = TimeSpan.FromMinutes(15);
-
-    private readonly TimeSpan _idadeMaximaNaFila = idadeMaximaNaFila ?? IdadeMaximaNaFilaPadrao;
 
     /// <summary>Tempo máximo do motor de IA, abaixo do lease da fila (120 s).</summary>
     public static readonly TimeSpan TempoMaximoMotor = TimeSpan.FromSeconds(60);
@@ -163,18 +161,39 @@ public sealed class ProcessadorMensagemRecebida(
             }
 
             var politica = await RepositorioNucleo.ObterPoliticaVigenteAsync(c, tx, tenantId, t).ConfigureAwait(false);
+
+            // Falha na detecção de dados protegidos vai para um humano antes de qualquer agrupamento: o pedido não pode
+            // sumir dentro da resposta a outra mensagem (revisão da F4.5, G4).
+            if (item.Value.DeteccaoFalhou)
+            {
+                await TirarDaFilaAsync(c, tx, mensagemId, t).ConfigureAwait(false);
+                await TransferirAsync(c, tx, conversa, politica, "deteccao_dados_protegidos_indisponivel", t).ConfigureAwait(false);
+                return Preparo.Transferida;
+            }
+
             if (await TratarMensagemMaisNovaAsync(c, tx, conversa, politica, mensagemId, t).ConfigureAwait(false) is { } desfecho)
             {
                 return desfecho == ResultadoProcessamento.Transferida ? Preparo.Transferida : Preparo.SemAcao;
             }
 
-            // Sem resposta automática: falha de detecção, sem política, tentativas esgotadas ou mensagem velha demais na
-            // fila (resposta atrasada não é resposta pertinente). Tudo vai para um humano (revisão da F4, S4 e S5).
+            var (maisNovaConhecida, _) = await MensagensMaisNovasAsync(c, tx, conversa.Id, mensagemId, t).ConfigureAwait(false);
+
+            // Sem resposta automática: falha de detecção, sem política, tentativas esgotadas ou atraso acima do limite de
+            // escalonamento da política (resposta atrasada não é resposta pertinente). Tudo vai para um humano.
+            var atraso = relogio.GetUtcNow() - item.Value.RecebidaEm;
+            var limiteEscalonamento = idadeMaximaNaFila ?? politica?.AtrasoEscalonamentoFila ?? IdadeMaximaNaFilaPadrao;
             var motivo = item.Value.DeteccaoFalhou ? "deteccao_dados_protegidos_indisponivel"
                 : politica is null ? "politica_ausente"
                 : item.Value.Tentativas > MaximoTentativas ? "tentativas_esgotadas"
-                : relogio.GetUtcNow() - item.Value.RecebidaEm > _idadeMaximaNaFila ? "mensagem_antiga_na_fila"
+                : atraso > limiteEscalonamento ? "mensagem_atrasada_escalonada"
                 : null;
+
+            // Monitoramento: atraso acima do limite de aviso fica registrado, mesmo quando a IA ainda responde.
+            if (motivo is null && politica is not null && atraso > politica.AtrasoAvisoFila)
+            {
+                await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, conversa.Id, "mensagem_atrasada",
+                    new { mensagem = mensagemId, atraso_segundos = (int)atraso.TotalSeconds }, t).ConfigureAwait(false);
+            }
             if (motivo is not null || politica is null)
             {
                 await TirarDaFilaAsync(c, tx, mensagemId, t).ConfigureAwait(false);
@@ -191,9 +210,10 @@ public sealed class ProcessadorMensagemRecebida(
             var contexto = new ContextoModelo(
                 historico,
                 elegiveis.Select(f => new ConhecimentoContexto(f.ItemId, f.Versao, f.Assunto, f.Conteudo)).ToList(),
-                [.. politica.AssuntosAutonomos]);
+                [.. politica.AssuntosAutonomos],
+                item.Value.TextoMascarado);
 
-            return new Preparo(conversa.Id, conversa.VersaoEstado, contexto, elegiveis.Select(f => f.Chave).ToHashSet(), politica);
+            return new Preparo(conversa.Id, conversa.VersaoEstado, contexto, elegiveis.Select(f => f.Chave).ToHashSet(), politica, maisNovaConhecida);
         }, ct).ConfigureAwait(false);
 
         if (preparo == Preparo.JaTratada)
@@ -239,7 +259,7 @@ public sealed class ProcessadorMensagemRecebida(
 
             // Chegou mensagem mais nova durante a geração.
             var politicaAtual = await RepositorioNucleo.ObterPoliticaVigenteAsync(c, tx, tenantId, t).ConfigureAwait(false);
-            if (await TratarMensagemMaisNovaAsync(c, tx, conversa, politicaAtual, mensagemId, t, jaFoiTiradaDaFila: true).ConfigureAwait(false) is { } desfecho)
+            if (await TratarMensagemMaisNovaAsync(c, tx, conversa, politicaAtual, mensagemId, t, jaFoiTiradaDaFila: true, maisNovaConhecida: preparo.MaisNovaConhecida).ConfigureAwait(false) is { } desfecho)
             {
                 return desfecho;
             }
@@ -291,9 +311,17 @@ public sealed class ProcessadorMensagemRecebida(
             var conversa = await RepositorioNucleo.ObterOuCriarConversaComTravaAsync(c, tx, tenantId, cliente.Id, t).ConfigureAwait(false);
             var mensagemId = Guid.NewGuid();
             var tipoSeguro = TipoSeguro(tipo);
-            if (!await RepositorioNucleo.InserirMensagemAsync(c, tx, mensagemId, tenantId, conversa.Id, "entrada", $"[mensagem não textual: {tipoSeguro}]", wamid, recebidaEm, t).ConfigureAwait(false))
+            if (!await RepositorioNucleo.InserirMensagemAsync(c, tx, mensagemId, tenantId, conversa.Id, "entrada", tipoSeguro == "reaction" ? TextoReacao : $"[mensagem não textual: {tipoSeguro}]", wamid, recebidaEm, t).ConfigureAwait(false))
             {
                 return ResultadoProcessamento.Duplicada;
+            }
+
+            // Reação (decisão do Victor, 2026-11-25): registrada, sem intervenção humana nem resposta da IA. Não conta como
+            // nova mensagem do cliente para a janela de 24h (conservador: a janela só abre com mensagem).
+            if (tipoSeguro == "reaction")
+            {
+                await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, conversa.Id, "reacao_registrada", new { mensagem = mensagemId }, t).ConfigureAwait(false);
+                return ResultadoProcessamento.SemAcaoDaIa;
             }
 
             conversa.RegistrarMensagemDoCliente(recebidaEm);
@@ -407,17 +435,17 @@ public sealed class ProcessadorMensagemRecebida(
         }
     }
 
-    private static async Task<(Guid ConversaId, bool DeteccaoFalhou, DateTimeOffset RecebidaEm, int Tentativas)?> ItemDaFilaAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid mensagemId, CancellationToken ct)
+    private static async Task<(Guid ConversaId, bool DeteccaoFalhou, DateTimeOffset RecebidaEm, int Tentativas, string TextoMascarado)?> ItemDaFilaAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid mensagemId, CancellationToken ct)
     {
         await using var cmd = RepositorioNucleo.Cmd(c, tx, """
-            select f.conversa_id, f.deteccao_falhou, m.ocorrida_em, f.tentativas
+            select f.conversa_id, f.deteccao_falhou, m.ocorrida_em, f.tentativas, m.texto_mascarado
               from fila_ia f join mensagens m on m.id = f.mensagem_id and m.tenant_id = f.tenant_id
              where f.mensagem_id = @m and f.tenant_id = tenant_atual()
             """);
         cmd.Parameters.AddWithValue("m", mensagemId);
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         return await r.ReadAsync(ct).ConfigureAwait(false)
-            ? (r.GetGuid(0), r.GetBoolean(1), r.GetFieldValue<DateTimeOffset>(2), r.GetInt32(3))
+            ? (r.GetGuid(0), r.GetBoolean(1), r.GetFieldValue<DateTimeOffset>(2), r.GetInt32(3), r.GetString(4))
             : null;
     }
 
@@ -429,58 +457,91 @@ public sealed class ProcessadorMensagemRecebida(
     }
 
     /// <summary>
-    /// Há mensagem do cliente mais nova que esta? Nenhuma mensagem sai do fluxo em silêncio (revisão da F4, G1):
+    /// Há mensagem do cliente mais nova que esta? Nenhuma mensagem sai do fluxo em silêncio (decisões do Victor,
+    /// 2026-11-25):
     /// <list type="bullet">
     /// <item>se a mais nova ainda está na fila, esta é agrupada a ela (a resposta à mais nova é gerada com esta no
     /// histórico e passa pela validação); fica registrado no histórico;</item>
-    /// <item>se a mais nova já foi tratada (chegada fora de ordem), esta nunca foi considerada numa resposta: vai para
-    /// a supervisão.</item>
+    /// <item>se a mais nova já foi tratada (chegada fora de ordem), esta é reconciliada: tratada agora, com o histórico
+    /// completo (inclusive a resposta já dada), e o fato fica registrado. Se a validação bloquear (ambiguidade, falta de
+    /// fonte), vai para supervisão como qualquer bloqueio.</item>
     /// </list>
-    /// Nulo se não há mensagem mais nova. Agrupar mensagens seguidas é detalhamento técnico a confirmar pelo Victor.
+    /// Nulo quando esta mensagem deve seguir para o motor.
+    /// </summary>
+    /// <summary>Marca com que a reação é gravada: não é fala do cliente (não agrupa, não vai ao motor).</summary>
+    public const string TextoReacao = "[mensagem não textual: reaction]";
+
+    private static async Task<(Guid? MaisNova, bool AlgumaPendente)> MensagensMaisNovasAsync(
+        NpgsqlConnection c, NpgsqlTransaction tx, Guid conversaId, Guid mensagemId, CancellationToken ct)
+    {
+        await using var cmd = RepositorioNucleo.Cmd(c, tx, """
+            select (select n.id from mensagens n join mensagens m on m.id = @m
+                     where n.conversa_id = @c and n.direcao = 'entrada' and n.id <> m.id and n.texto_mascarado <> @reacao
+                       and (n.ocorrida_em, n.criada_em) > (m.ocorrida_em, m.criada_em)
+                     order by n.ocorrida_em desc, n.criada_em desc limit 1),
+                   exists (select 1 from mensagens n join mensagens m on m.id = @m join fila_ia f on f.mensagem_id = n.id
+                            where n.conversa_id = @c and n.direcao = 'entrada' and n.id <> m.id
+                              and (n.ocorrida_em, n.criada_em) > (m.ocorrida_em, m.criada_em))
+            """);
+        cmd.Parameters.AddWithValue("c", conversaId);
+        cmd.Parameters.AddWithValue("m", mensagemId);
+        cmd.Parameters.AddWithValue("reacao", TextoReacao);
+        await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        await r.ReadAsync(ct).ConfigureAwait(false);
+        return (r.IsDBNull(0) ? null : r.GetGuid(0), r.GetBoolean(1));
+    }
+
+    /// <summary>
+    /// Há mensagem do cliente mais nova que esta? Nenhuma mensagem sai do fluxo em silêncio (decisões do Victor,
+    /// 2026-11-25). Reações não contam.
+    /// <list type="bullet">
+    /// <item>se alguma mais nova ainda está na fila, esta é agrupada (a resposta à mais nova é gerada com esta no
+    /// histórico e passa pela validação); fica registrado;</item>
+    /// <item>se a mais nova já foi tratada (chegada fora de ordem), esta é reconciliada: tratada agora, como mensagem a
+    /// responder, com o histórico completo; fica registrado;</item>
+    /// <item>na transação da decisão, se uma mais nova foi respondida DURANTE a geração (o contexto não a viu), a
+    /// resposta não sai: supervisão (ambiguidade).</item>
+    /// </list>
+    /// Nulo quando esta mensagem segue para o motor (ou para a decisão).
     /// </summary>
     private async Task<ResultadoProcessamento?> TratarMensagemMaisNovaAsync(
         NpgsqlConnection c, NpgsqlTransaction tx, Dominio.Conversas.Conversa conversa, Dominio.Politicas.PoliticaTenant? politica, Guid mensagemId,
-        CancellationToken ct, bool jaFoiTiradaDaFila = false)
+        CancellationToken ct, bool jaFoiTiradaDaFila = false, Guid? maisNovaConhecida = null)
     {
-        Guid? maisNova = null;
-        var pendente = false;
-        await using (var cmd = RepositorioNucleo.Cmd(c, tx, """
-            select n.id, exists (select 1 from fila_ia f where f.mensagem_id = n.id)
-              from mensagens n join mensagens m on m.id = @m
-             where n.conversa_id = @c and n.direcao = 'entrada' and n.id <> m.id
-               and (n.ocorrida_em, n.criada_em) > (m.ocorrida_em, m.criada_em)
-             order by n.ocorrida_em desc, n.criada_em desc limit 1
-            """))
-        {
-            cmd.Parameters.AddWithValue("c", conversa.Id);
-            cmd.Parameters.AddWithValue("m", mensagemId);
-            await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-            if (await r.ReadAsync(ct).ConfigureAwait(false))
-            {
-                maisNova = r.GetGuid(0);
-                pendente = r.GetBoolean(1);
-            }
-        }
-
-        if (maisNova is null)
+        var (maisNova, algumaPendente) = await MensagensMaisNovasAsync(c, tx, conversa.Id, mensagemId, ct).ConfigureAwait(false);
+        if (maisNova is null && !algumaPendente)
         {
             return null;
         }
 
-        if (!jaFoiTiradaDaFila)
+        if (algumaPendente)
         {
-            await TirarDaFilaAsync(c, tx, mensagemId, ct).ConfigureAwait(false);
-        }
+            if (!jaFoiTiradaDaFila)
+            {
+                await TirarDaFilaAsync(c, tx, mensagemId, ct).ConfigureAwait(false);
+            }
 
-        if (pendente)
-        {
             await RepositorioNucleo.InserirEventoAsync(c, tx, conversa.TenantId, conversa.Id, "mensagem_agrupada",
                 new { mensagem = mensagemId, respondida_com = maisNova }, ct).ConfigureAwait(false);
             await RepositorioNucleo.SalvarConversaAsync(c, tx, conversa, ct).ConfigureAwait(false);
             return ResultadoProcessamento.SemAcaoDaIa;
         }
 
-        await TransferirAsync(c, tx, conversa, politica, "mensagem_fora_de_ordem", ct).ConfigureAwait(false);
+        if (!jaFoiTiradaDaFila)
+        {
+            // Fora de ordem: segue para o motor (reconciliação), com registro.
+            await RepositorioNucleo.InserirEventoAsync(c, tx, conversa.TenantId, conversa.Id, "mensagem_fora_de_ordem",
+                new { mensagem = mensagemId, mais_nova = maisNova }, ct).ConfigureAwait(false);
+            return null;
+        }
+
+        if (maisNova == maisNovaConhecida)
+        {
+            return null; // já era fora de ordem ao montar o contexto: o contexto a viu
+        }
+
+        // Uma mensagem mais nova foi respondida enquanto esta era gerada: a resposta não considerou a outra.
+        await TransferirAsync(c, tx, conversa, politica, "mensagem_mais_nova_respondida_durante_a_geracao", ct).ConfigureAwait(false);
         return ResultadoProcessamento.Transferida;
     }
 
@@ -515,7 +576,7 @@ public sealed class ProcessadorMensagemRecebida(
         }
     }
 
-    private sealed record Preparo(Guid ConversaId, long VersaoLida, ContextoModelo? Contexto, IReadOnlySet<ChaveFonte>? Entregues, Dominio.Politicas.PoliticaTenant? Politica = null)
+    private sealed record Preparo(Guid ConversaId, long VersaoLida, ContextoModelo? Contexto, IReadOnlySet<ChaveFonte>? Entregues, Dominio.Politicas.PoliticaTenant? Politica = null, Guid? MaisNovaConhecida = null)
     {
         public static readonly Preparo JaTratada = new(Guid.Empty, -1, null, null);
         public static readonly Preparo SemAcao = new(Guid.Empty, -2, null, null);

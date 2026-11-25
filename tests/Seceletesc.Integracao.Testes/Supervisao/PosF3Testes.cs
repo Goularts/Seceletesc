@@ -656,6 +656,88 @@ public sealed class PosF3Testes(BancoFixture banco)
         Assert.Equal(["conhecimento_aprovado"], tipos);
     }
 
+    // ------------------------------------------------------------------ decisões da F4.5 (2026-11-25)
+
+    [Fact]
+    [Trait("Regra", "INV-19")]
+    [Trait("Regra", "INV-20")]
+    public async Task Nova_politica_de_validade_poe_conhecimento_aprovado_em_reavaliacao_sem_excluir()
+    {
+        await using var amb = await AmbientePipeline.CriarAsync(banco);
+        var tmp = await amb.ConhecimentoAsync("horario", "Fechado no feriado de 30 dias.", [Classificacao.Temporario], validoAte: amb.Relogio.Agora.AddDays(30));
+        await using var api = amb.Api();
+        var admin = api.Cliente(amb.ChaveSupervisor);
+
+        var publicar = await admin.PutAsJsonAsync("/supervisao/politica", new
+        {
+            versaoEsperada = 1,
+            conteudo = new { assuntosAutonomos = new[] { "horario" }, classificacoesPermitidas = new[] { "Publico", "Temporario" }, validadeMaximaDias = new Dictionary<string, int> { ["Temporario"] = 7 } },
+        });
+        var reavaliar = await (await admin.GetAsync(new Uri("/supervisao/conhecimento?reavaliacao=true", UriKind.Relative))).JsonAsync();
+        var motor = new MotorFalso(_ => Task.FromResult("{}"));
+        await amb.Orquestrador(motor).ProcessarAsync(amb.Mensagem("Abre no feriado?"));
+
+        Assert.Equal(HttpStatusCode.OK, publicar.StatusCode);
+        Assert.Contains(reavaliar.EnumerateArray(), i => i.GetProperty("id").GetGuid() == tmp.ItemId);
+        Assert.Equal("Aprovado", await amb.ConsultarAsync<string>($"select status from itens_conhecimento where id = '{tmp.ItemId}'"));
+        Assert.Equal(1L, await amb.ContarAsync($"eventos_historico where tenant_id = '{amb.TenantId}' and tipo = 'conhecimento_para_reavaliacao' and dados->'itens' ? '{tmp.ItemId}'"));
+        Assert.DoesNotContain(motor.Contextos.Single().Conhecimentos, k => k.ItemId == tmp.ItemId);
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-23")]
+    public async Task Endereco_institucional_entra_em_conhecimento_e_sai_na_resposta_e_o_particular_nao()
+    {
+        const string fonte = "Nossa loja fica na Rua das Flores, 100, CEP 88015-200.";
+        await using var amb = await AmbientePipeline.CriarAsync(banco);
+        await using var api = amb.Api();
+        var admin = api.Cliente(amb.ChaveSupervisor);
+        var publicar = await admin.PutAsJsonAsync("/supervisao/politica", new
+        {
+            versaoEsperada = 1,
+            conteudo = new { assuntosAutonomos = new[] { "horario" }, cepsInstitucionais = new[] { "88015-200" } },
+        });
+        var institucional = await admin.PostAsJsonAsync("/supervisao/conhecimento", new { assunto = "horario", conteudo = fonte });
+        var particular = await admin.PostAsJsonAsync("/supervisao/conhecimento", new { assunto = "horario", conteudo = "Entregar no CEP 01310-100." });
+        var item = (await institucional.JsonAsync()).GetProperty("id").GetGuid();
+        await admin.PostAsJsonAsync($"/supervisao/conhecimento/{item}/aprovar", new { versaoProposta = 1, permissoes = new { classificacoes = new[] { "Publico" }, escopoTipo = "Empresa" } });
+        var motor = new MotorFalso(ctx => Task.FromResult(MotorFalso.Rascunho(ctx, "Estamos na Rua das Flores, 100, CEP 88015-200.", "horario")));
+
+        var r = await amb.Orquestrador(motor).ProcessarAsync(amb.Mensagem("Onde fica a loja?"));
+
+        Assert.Equal(HttpStatusCode.OK, publicar.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, institucional.StatusCode);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, particular.StatusCode);
+        Assert.Equal(ResultadoProcessamento.RespostaEnfileirada, r);
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-19")]
+    [Trait("Regra", "INV-20")]
+    public async Task Conhecimento_aprovado_no_limite_do_prazo_continua_em_uso()
+    {
+        // Revisão da F4.5 (G3): aprovação e uso contam o prazo pela mesma referência (o relógio do banco).
+        await using var amb = await AmbientePipeline.CriarAsync(banco, p => p.Classificacoes.Add(Classificacao.Temporario));
+        await using var api = amb.Api();
+        var admin = api.Cliente(amb.ChaveSupervisor);
+        await admin.PutAsJsonAsync("/supervisao/politica", new
+        {
+            versaoEsperada = 1,
+            conteudo = new { assuntosAutonomos = new[] { "horario" }, classificacoesPermitidas = new[] { "Publico", "Temporario" }, validadeMaximaDias = new Dictionary<string, int> { ["Temporario"] = 7 } },
+        });
+        var agoraDoBanco = (DateTime)(await banco.ConsultarComoAdminAsync("select now() at time zone 'utc'"))!;
+        var item = (await (await admin.PostAsJsonAsync("/supervisao/conhecimento", new { assunto = "horario", conteudo = "Feriado: fechado." })).JsonAsync()).GetProperty("id").GetGuid();
+        var aprovar = await admin.PostAsJsonAsync($"/supervisao/conhecimento/{item}/aprovar", new
+        {
+            versaoProposta = 1,
+            permissoes = new { classificacoes = new[] { "Temporario" }, escopoTipo = "Empresa", validoAte = new DateTimeOffset(agoraDoBanco, TimeSpan.Zero).AddDays(7).AddMinutes(-1) },
+        });
+        var reavaliar = await (await admin.GetAsync(new Uri("/supervisao/conhecimento?reavaliacao=true", UriKind.Relative))).JsonAsync();
+
+        Assert.Equal(HttpStatusCode.OK, aprovar.StatusCode);
+        Assert.DoesNotContain(reavaliar.EnumerateArray(), i => i.GetProperty("id").GetGuid() == item);
+    }
+
     // ------------------------------------------------------------------ auxiliares
 
     private static async Task<List<Guid>> IdsAsync(HttpClient c) =>

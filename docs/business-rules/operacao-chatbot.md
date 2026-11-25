@@ -46,7 +46,8 @@ A orientação interna pode conter informação específica. Por isso ela não v
 
 - O humano pode assumir a conversa a qualquer momento, não só quando a IA pede, dentro das permissões do papel dele.
 - **Atribuição** (decisão do Victor, 2026-11-25): atendimentos que precisam de humano formam uma fila. O atendente vê as conversas atribuídas a ele e a fila de atendimentos disponíveis. Supervisor e administrador gerenciam a fila da empresa. O isolamento entre empresas vale sempre.
-  - Detalhamento técnico, **a confirmar pelo Victor**: o atendente só atua (lê as mensagens, assume, responde, orienta) nas conversas atribuídas a ele; da fila, vê só o resumo, com o telefone parcialmente oculto, e pega o atendimento ao assumir; não assume conversa que está com a IA fora da fila; liberar a conversa para a IA tira a atribuição.
+  - O atendente assume conversas pela fila ou por atribuição autorizada (decisão do Victor, 2026-11-25): só atua (lê as mensagens, assume, responde, orienta) nas conversas atribuídas a ele; da fila, vê só o resumo, com o telefone parcialmente oculto, e pega o atendimento ao assumir.
+  - Liberar a conversa para a IA não apaga histórico nem pendências externas (como a retomada pelo celular); só tira o responsável humano, com registro.
 - A IA pode avisar o cliente sobre a transferência quando pertinente, sem prometer prazo ou disponibilidade não confirmados. O aviso passa pela mesma validação do backend e, como qualquer mensagem automática, não pode ser enviado se um humano já tiver assumido a conversa.
 
 ### Fora da janela de 24h do WhatsApp
@@ -56,6 +57,16 @@ A orientação interna pode conter informação específica. Por isso ela não v
 - A retomada é feita por um humano pelo celular (mesmo número de WhatsApp). Toda mensagem enviada pelo humano por fora da API coloca a conversa sob controle humano e é registrada no histórico.
 - A marcação (pendência de retomada pelo celular) fica **ativa até ser encerrada explicitamente** por um humano autorizado (supervisor ou administrador), com responsável, data e motivo registrados. Liberar a conversa para a IA **não** encerra a pendência.
 - Enquanto a pendência estiver ativa, a IA não pode afirmar que o assunto foi resolvido. A pendência é visível na supervisão.
+
+### Recebimento de mensagens (decisões do Victor, 2026-11-25)
+
+- **Mensagens consecutivas** do cliente podem ser agrupadas: a resposta é gerada para a mais recente, com as anteriores no histórico, e passa pela validação. O agrupamento fica registrado.
+- **Mensagens fora de ordem** são reconciliadas quando possível: tratadas com o histórico completo, inclusive respostas já dadas. Se não houver resposta válida (ambiguidade, falta de fonte), vão para supervisão como qualquer bloqueio.
+- **Mensagens atrasadas** geram registro de monitoramento acima de um limite de aviso e escalonamento para supervisão (sem resposta automática) acima de um limite de escalonamento. Os dois limites são configuráveis na política (padrão: 5 e 15 minutos).
+- **Falhas de entrega** são registradas e acionam a supervisão.
+- **Reações** são registradas, sem intervenção humana nem resposta automática.
+- Mensagens que não são texto (mídia, áudio etc.) vão para supervisão (padrão do plano; o Victor pode mudar).
+- **Fora da janela de 24h sem coexistência:** nenhuma mensagem é enviada até existir um fluxo de templates autorizado; aguarda-se nova mensagem do cliente.
 
 ## 3a. Dados protegidos do cliente
 
@@ -102,7 +113,7 @@ Decisão do Victor (2026-11-25): um conjunto mínimo de proibições e restriç�
 - uso de conhecimento não aprovado, vencido, revogado ou fora do escopo;
 - compromissos comerciais não autorizados: valores, prazos e termos de compromisso só com fonte aprovada; os termos de compromisso padrão não podem ser removidos, só ampliados;
 - respostas fora do escopo: só assuntos autônomos, com fonte do mesmo assunto;
-- informação interna (INT) e restrita (RES) nunca vão para resposta automática (detalhamento técnico, **a confirmar pelo Victor**: hoje NEG, EXC e CLI continuam liberáveis pelo administrador, com as condições da seção de permissões comerciais);
+- informação interna (INT) e restrita (RES) nunca são divulgadas automaticamente (decisão do Victor, 2026-11-25); NEG, EXC e CLI continuam liberáveis só pelo administrador, com as condições das permissões comerciais;
 - estado da conversa, autodeclaração como humano, elementos interativos e URLs fora da lista.
 
 Essas regras não dependem só de palavras proibidas: são regras estruturadas (fonte aprovada e vigente, escopo, assunto, estado da conversa, valores comparados com a fonte) checadas pelo backend.

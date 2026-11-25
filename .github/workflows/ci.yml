@@ -42,6 +42,10 @@ jobs:
       - name: Testes
         run: dotnet test --no-build --configuration Release --logger "console;verbosity=normal"
 
+      # Funções do portão de mudanças que não dependem de rede nem do Ruflo (Node já vem no runner).
+      - name: Testes do portão de mudanças
+        run: node ferramentas/portao/testes-unitarios.cjs
+
   cobertura-nao-diminui:
     name: proteção das regras não diminui
     if: github.event_name == 'pull_request'

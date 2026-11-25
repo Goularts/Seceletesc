@@ -6,6 +6,18 @@ Antes de trabalhar neste repositório, leia:
 2. `docs/business-rules/invariants.md`, `operacao-chatbot.md` e `governanca-conhecimento.md`
 3. `docs/desenvolvimento/qualidade.md`
 
+## Portão de mudanças (obrigatório)
+
+Antes de mudanças relevantes, consulte decisões, regras e regressões; antes de concluir, rode os testes de regressão. No Claude Code isso é automático (hooks). Em outras ferramentas (Codex etc.), rode:
+
+```cmd
+node ferramentas\portao\contexto.cjs --consulta "descrição da tarefa"
+node ferramentas\portao\impacto.cjs --arquivo caminho\dorquivo
+node ferramentas\portao	estar.cjs
+```
+
+Bug corrigido vira linha em `docs/desenvolvimento/regressoes.md` (`node ferramentas\portaoegistrar.cjs regressao ...`), com o teste que o protege. Detalhes: `docs/desenvolvimento/portao.md`.
+
 ## Duas coisas diferentes
 
 - **Desenvolvimento do software: autonomia.** Crie, altere, refatore, organize, teste e decida tecnicamente sem pedir aprovação a cada passo. Siga `docs/desenvolvimento/qualidade.md`.

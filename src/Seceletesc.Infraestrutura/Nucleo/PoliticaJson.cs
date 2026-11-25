@@ -22,6 +22,9 @@ public static class PoliticaJson
             TermosCompromisso = [.. p.TermosCompromissoAdicionais],
             EmailsInstitucionais = [.. p.EmailsInstitucionais.Order(StringComparer.Ordinal)],
             ValidadeMaximaDias = p.ValidadeMaximaDias.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
+            CepsInstitucionais = [.. p.CepsInstitucionais.Order(StringComparer.Ordinal)],
+            AtrasoAvisoMinutos = (int)p.AtrasoAvisoFila.TotalMinutes,
+            AtrasoEscalonamentoMinutos = (int)p.AtrasoEscalonamentoFila.TotalMinutes,
             DominiosPermitidos = [.. p.DominiosPermitidos],
             EnviarConhecimentoClienteAoModelo = p.EnviarConhecimentoClienteAoModelo,
             ValidadeMensagemAutomaticaSegundos = (int)p.ValidadeMensagemAutomatica.TotalSeconds,
@@ -32,7 +35,7 @@ public static class PoliticaJson
     {
         var dto = JsonSerializer.Deserialize<Dto>(json, Opcoes) ?? throw new InvalidOperationException("Política vazia.");
         // Elemento nulo em qualquer lista é formato inválido (revisão pós-F3, S10), não erro interno.
-        if (new[] { dto.AssuntosAutonomos, dto.AssuntosExigemHumano, dto.ClassificacoesPermitidas, dto.TermosCompromisso, dto.DominiosPermitidos, dto.EmailsInstitucionais }
+        if (new[] { dto.AssuntosAutonomos, dto.AssuntosExigemHumano, dto.ClassificacoesPermitidas, dto.TermosCompromisso, dto.DominiosPermitidos, dto.EmailsInstitucionais, dto.CepsInstitucionais }
             .Any(l => l is not null && l.Any(x => x is null)))
         {
             throw new FormatException("listas da política não aceitam elementos nulos");
@@ -50,6 +53,9 @@ public static class PoliticaJson
             TermosCompromisso = dto.TermosCompromisso ?? [],
             EmailsInstitucionais = new HashSet<string>((dto.EmailsInstitucionais ?? []).Select(e => e.Trim().ToLowerInvariant())),
             ValidadeMaximaDias = (dto.ValidadeMaximaDias ?? []).ToDictionary(kv => LerClassificacao(kv.Key), kv => kv.Value),
+            CepsInstitucionais = new HashSet<string>((dto.CepsInstitucionais ?? []).Select(c => new string(c.Where(char.IsAsciiDigit).ToArray()))),
+            AtrasoAvisoFila = dto.AtrasoAvisoMinutos is { } aviso ? TimeSpan.FromMinutes(aviso) : padrao.AtrasoAvisoFila,
+            AtrasoEscalonamentoFila = dto.AtrasoEscalonamentoMinutos is { } escalonamento ? TimeSpan.FromMinutes(escalonamento) : padrao.AtrasoEscalonamentoFila,
             DominiosPermitidos = new HashSet<string>(dto.DominiosPermitidos ?? []),
             EnviarConhecimentoClienteAoModelo = dto.EnviarConhecimentoClienteAoModelo,
             ValidadeMensagemAutomatica = dto.ValidadeMensagemAutomaticaSegundos is > 0 and var s
@@ -88,6 +94,12 @@ public static class PoliticaJson
         public List<string>? EmailsInstitucionais { get; set; }
 
         public Dictionary<string, int>? ValidadeMaximaDias { get; set; }
+
+        public List<string>? CepsInstitucionais { get; set; }
+
+        public int? AtrasoAvisoMinutos { get; set; }
+
+        public int? AtrasoEscalonamentoMinutos { get; set; }
 
         public bool EnviarConhecimentoClienteAoModelo { get; set; }
 

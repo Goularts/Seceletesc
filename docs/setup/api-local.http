@@ -1,0 +1,28 @@
+# Requisições para a API local (extensão REST Client do VS Code ou similar).
+# Antes: suba a API (ver README, "Demonstração local" ou "API de supervisão local").
+# A chave fica numa variável de ambiente do seu terminal (SECELETESC_CHAVE), nunca neste arquivo.
+
+@base = http://127.0.0.1:5288
+@chave = {{$processEnv SECELETESC_CHAVE}}
+
+### Saúde
+GET {{base}}/saude
+
+### Documento OpenAPI (só em desenvolvimento)
+GET {{base}}/openapi/v1.json
+
+### Conversas (fila e atribuídas)
+GET {{base}}/supervisao/conversas
+Authorization: Bearer {{chave}}
+
+### Conhecimento
+GET {{base}}/supervisao/conhecimento
+Authorization: Bearer {{chave}}
+
+### Conhecimento aguardando reavaliação
+GET {{base}}/supervisao/conhecimento?reavaliacao=true
+Authorization: Bearer {{chave}}
+
+### Política vigente
+GET {{base}}/supervisao/politica
+Authorization: Bearer {{chave}}

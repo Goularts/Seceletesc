@@ -101,9 +101,9 @@ public static class EndpointsSupervisao
             Responder(await s.EncerrarRetomadaAsync(Usuario(h), id, p.Motivo, ct)));
 
         // ---------------------------------------------------------- conhecimento (F3)
-        g.MapGet("/conhecimento", async (HttpContext h, ServicoConhecimento s, string? status, CancellationToken ct) =>
+        g.MapGet("/conhecimento", async (HttpContext h, ServicoConhecimento s, string? status, bool? reavaliacao, CancellationToken ct) =>
             status is null or "Rev" or "Aprovado" or "Rejeitado" or "Revogado"
-                ? Results.Ok(await s.ListarAsync(Usuario(h), status, ct))
+                ? Results.Ok(await s.ListarAsync(Usuario(h), status, reavaliacao == true, ct))
                 : Results.Problem("status inválido", statusCode: StatusCodes.Status400BadRequest));
 
         g.MapGet("/conhecimento/{id:guid}", async (HttpContext h, ServicoConhecimento s, Guid id, CancellationToken ct) =>
