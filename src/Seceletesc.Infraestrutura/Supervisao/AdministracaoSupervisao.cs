@@ -26,14 +26,16 @@ public static class AdministracaoSupervisao
     }
 
     /// <summary>Cria o usuário e devolve a chave de API. A chave só aparece aqui: o banco guarda o hash.</summary>
-    public static async Task<(Guid UsuarioId, string Chave)> CriarSupervisorAsync(string connectionStringDono, Guid tenantId, string nome, CancellationToken ct = default)
+    public static async Task<(Guid UsuarioId, string Chave)> CriarSupervisorAsync(
+        string connectionStringDono, Guid tenantId, string nome, PapelSupervisao papel = PapelSupervisao.Atendente, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(nome);
         var id = Guid.NewGuid();
         var chave = ServicoSupervisao.GerarChave();
         await using var c = new NpgsqlConnection(connectionStringDono);
         await c.OpenAsync(ct).ConfigureAwait(false);
-        await using var cmd = new NpgsqlCommand("insert into usuarios_supervisao (id, tenant_id, nome, chave_sha256) values (@id, @t, @n, @h)", c);
+        await using var cmd = new NpgsqlCommand("insert into usuarios_supervisao (id, tenant_id, nome, chave_sha256, papel) values (@id, @t, @n, @h, @p)", c);
+        cmd.Parameters.AddWithValue("p", papel.ToString());
         cmd.Parameters.AddWithValue("id", id);
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("n", nome.Trim());
@@ -42,12 +44,52 @@ public static class AdministracaoSupervisao
         return (id, chave);
     }
 
-    public static async Task<bool> DesativarSupervisorAsync(string connectionStringDono, Guid usuarioId, CancellationToken ct = default)
+    /// <summary>Troca o papel. Vale na próxima requisição: o papel é lido a cada autenticação. Fica no histórico da empresa.</summary>
+    public static Task<bool> AlterarPapelAsync(string connectionStringDono, Guid usuarioId, PapelSupervisao papel, CancellationToken ct = default) =>
+        AlterarUsuarioAsync(connectionStringDono, usuarioId, "papel = @p", "papel_alterado", papel.ToString(), ct);
+
+    public static Task<bool> DesativarSupervisorAsync(string connectionStringDono, Guid usuarioId, CancellationToken ct = default) =>
+        AlterarUsuarioAsync(connectionStringDono, usuarioId, "ativo = false", "usuario_desativado", null, ct);
+
+    /// <summary>Altera o usuário e registra o evento no histórico da empresa dele, na mesma transação.</summary>
+    private static async Task<bool> AlterarUsuarioAsync(string connectionStringDono, Guid usuarioId, string alteracao, string evento, string? papel, CancellationToken ct)
     {
-        await using var c = new NpgsqlConnection(connectionStringDono);
-        await c.OpenAsync(ct).ConfigureAwait(false);
-        await using var cmd = new NpgsqlCommand("update usuarios_supervisao set ativo = false where id = @id", c);
-        cmd.Parameters.AddWithValue("id", usuarioId);
-        return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1;
+        // Pool próprio: a conexão recebe o tenant (para o evento) e não deve voltar ao pool compartilhado com isso.
+        await using var ds = NpgsqlDataSource.Create(connectionStringDono);
+        await using var c = await ds.OpenConnectionAsync(ct).ConfigureAwait(false);
+        await using var tx = await c.BeginTransactionAsync(ct).ConfigureAwait(false);
+        string? papelAnterior;
+        Guid tenant;
+        await using (var sel = new NpgsqlCommand("select tenant_id, papel from usuarios_supervisao where id = @id for update", c, tx))
+        {
+            sel.Parameters.AddWithValue("id", usuarioId);
+            await using var r = await sel.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            if (!await r.ReadAsync(ct).ConfigureAwait(false))
+            {
+                return false;
+            }
+
+            tenant = r.GetGuid(0);
+            papelAnterior = r.GetString(1);
+        }
+
+        await using (var upd = new NpgsqlCommand($"update usuarios_supervisao set {alteracao} where id = @id", c, tx))
+        {
+            upd.Parameters.AddWithValue("id", usuarioId);
+            upd.Parameters.AddWithValue("p", (object?)papel ?? DBNull.Value);
+            await upd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        await ExecutorTenant.DefinirTenantAsync(c, tx, tenant, ct).ConfigureAwait(false);
+        await using (var ev = new NpgsqlCommand("insert into eventos_historico (tenant_id, tipo, dados) values (@t, @tipo, @d::jsonb)", c, tx))
+        {
+            ev.Parameters.AddWithValue("t", tenant);
+            ev.Parameters.AddWithValue("tipo", evento);
+            ev.Parameters.AddWithValue("d", System.Text.Json.JsonSerializer.Serialize(new { usuario = usuarioId, de = papelAnterior, para = papel, origem = "linha de comando" }));
+            await ev.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        await tx.CommitAsync(ct).ConfigureAwait(false);
+        return true;
     }
 }

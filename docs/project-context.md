@@ -43,8 +43,11 @@ Resumo numerado das regras A e B: `docs/business-rules/invariants.md`.
 16. Regras A e B protegidas por testes automatizados (inclusive adversariais, verificando a decisão do backend), CI e controles de repositório.
 17. Repositório público no GitHub (`Goularts/Seceletesc`); CI no GitHub Actions. Sem aprovação manual de PR nem conta separada para agentes neste momento.
 18. Escopo inicial (2026-11-25): o chatbot funciona como **secretária de atendimento**, não como agente comercial. Não negocia nem trata propostas; conhecimento com escopo "proposta" continua fora de uso.
-19. Dados protegidos em respostas automáticas (2026-11-25): mantém-se o bloqueio. Resposta automática que contenha CPF, cartão, e-mail etc. não sai; se o atendimento precisar desse dado, a conversa espera um humano. Na entrada, o dado enviado pelo cliente não é guardado em claro: fica cifrado e fora do alcance da IA. Na API de supervisão, resposta humana com dado protegido também é recusada (o humano trata pelo celular).
+19. Dados protegidos (2026-11-25, revista na autorização da F3): tratamento proporcional ao risco, igual para respostas automáticas e humanas pela API. Dado comum (e-mail, CEP) só quando necessário, autorizado e pertinente: na resposta automática, só se constar numa fonte aprovada citada; na humana, o humano autoriza; o histórico guarda só o texto mascarado e o valor cifrado. Dado de identificação (CPF etc.) exige finalidade definida e acesso restrito; sem esse mecanismo, não sai em mensagem. Dado financeiro (cartão completo) nunca é reproduzido nem guardado em claro. Dados de outros clientes ou empresas: proibidos. A proteção cobre entrada, armazenamento, logs e auditoria. Detalhes em `operacao-chatbot.md`, seção 3a.
 20. Termos de compromisso (2026-11-25): a lista padrão fica como está. Ela só restringe (na dúvida, transfere) e cada empresa a ajusta pela política, na API de supervisão. A calibragem é feita no piloto, olhando os bloqueios por motivo.
+21. Papéis humanos (2026-11-25, F3): atendente, supervisor e administrador, conforme `governanca-conhecimento.md`, seção 3a. Toda autorização é validada pelo backend; o modelo não concede permissões.
+22. Permissões comerciais (2026-11-25, F3): negociações, descontos, propostas especiais e exceções comerciais não são oferecidos autonomamente. Só o administrador aprova NEG, EXC, RES e CLI e altera a política que os libera; NEG e EXC exigem cliente ou atendimento definido e validade. Nenhuma funcionalidade de negociação é implementada.
+23. Pendência de retomada pelo celular (2026-11-25, F3): ativa até encerramento explícito por supervisor ou administrador, com responsável, data e motivo; liberar a conversa não a encerra; enquanto ativa, a IA não afirma que o assunto foi resolvido.
 
 ## Etapa atual
 
@@ -54,18 +57,18 @@ Preparação. Antes de implementar funcionalidades, apresentar ao Victor um **pl
 
 Não presumir. Decisões puramente técnicas (estrutura da solução, estratégia de isolamento, integrações, testes) cabem à equipe de desenvolvimento e entram no plano técnico.
 
-- Papéis humanos: quem é "humano autorizado" e quem pode aprovar cada classificação.
 - Critérios concretos de "informação suficiente", pertinência e proporcionalidade.
 - Quais assuntos permitem pedir esclarecimento em vez de transferir.
 - Quais fontes, além do conhecimento aprovado, são autorizadas (ex.: sistemas da empresa).
 - Escopo de atendimento autorizado inicial (assuntos da primeira empresa).
 - Política de retenção, auditoria e LGPD.
-- Autenticação e usuários da API e do painel de supervisão. (Em desenvolvimento: chave de API por usuário, criada por linha de comando. Produção: a definir.)
+- Autenticação e usuários da API e do painel de supervisão. (Em desenvolvimento: chave de API por usuário, com papel, criada por linha de comando. Produção: a definir.)
+- "Conversas autorizadas" do atendente: hoje ele vê todas as conversas da empresa. Haverá atribuição por atendente?
 - Retomada após liberação: a IA responde mensagens recebidas durante o controle humano? (Padrão no plano: não.)
 - Mensagens que não são texto (mídia, áudio, reação, edição): a IA trata? (Padrão no plano: vão para supervisão.)
 - Esclarecimento: em quais assuntos é permitido e como é gerado? (Padrão no plano: desligado.)
 - Cliente identificado pelo telefone: como tratar número compartilhado ou reciclado?
 - Categorias de dados protegidos (criptografados e ocultos da IA). Padrão técnico inicial: CPF, CNPJ, RG, cartão de pagamento, e-mail, CEP/endereço. O Victor pode ampliar.
 - Quem pode ver dados protegidos no painel.
-- Quem pode publicar a política e o que ela pode afrouxar (revisão da F2). Hoje qualquer usuário da supervisão publica, e a política pode liberar NEG, EXC, INT, RES ou CLI em resposta automática, ligar o envio de conhecimento de cliente ao modelo e reduzir os termos de compromisso. Sob a decisão 18 (secretária), NEG e EXC devem poder ser autônomos? Os termos padrão devem ser um piso?
-- Marcação de retomada humana: quando termina? Hoje ela nunca é limpa (nem ao liberar).
+- Termos de compromisso padrão como piso: hoje o administrador pode reduzir a lista pela política. Deve haver um mínimo que nem ele remove?
+- Finalidade para dados de identificação (CPF etc.): qual mecanismo definirá a finalidade e quem pode ver o dado no painel? Até lá, esses dados não saem em mensagem.

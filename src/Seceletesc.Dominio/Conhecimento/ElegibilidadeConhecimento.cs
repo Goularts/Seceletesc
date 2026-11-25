@@ -73,6 +73,14 @@ public static class ElegibilidadeConhecimento
             return MotivoInelegivel.ClassificacaoNaoPermitida;
         }
 
+        // Condição comercial excepcional (NEG, EXC) só vale para um cliente ou atendimento definido e com validade
+        // (decisão 22). Garantido na aprovação; reconferido no uso.
+        if ((fonte.Classificacoes.Contains(Classificacao.Negociacao) || fonte.Classificacoes.Contains(Classificacao.Excecao))
+            && (fonte.Escopo.Tipo is not (TipoEscopo.Cliente or TipoEscopo.Atendimento) || fonte.ValidoAte is null))
+        {
+            return MotivoInelegivel.ForaDoEscopo;
+        }
+
         if (fonte.Classificacoes.Contains(Classificacao.Cliente))
         {
             if (!politica.EnviarConhecimentoClienteAoModelo)

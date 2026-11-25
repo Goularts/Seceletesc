@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using Seceletesc.Dominio.Comum;
 using Seceletesc.Dominio.Conhecimento;
 using Seceletesc.Dominio.Conversas;
+using Seceletesc.Dominio.DadosProtegidos;
 using Seceletesc.Dominio.Politicas;
 using Seceletesc.Dominio.Respostas;
 
@@ -27,6 +28,9 @@ public enum MotivoBloqueio
     AvisoNaoConfigurado,
     TempoEsgotado,
     DadoProtegidoNaResposta,
+
+    /// <summary>Pendência de retomada pelo celular ativa e o texto afirma que o assunto foi resolvido.</summary>
+    ResolucaoComPendencia,
 }
 
 public sealed record ResultadoValidacao(bool Aprovado, MotivoBloqueio? Motivo, string? Detalhe)
@@ -92,10 +96,11 @@ public static partial class ValidadorEnvio
             return ResultadoValidacao.Bloquear(MotivoBloqueio.CaracterNaoPermitido, suspeito);
         }
 
-        // 0b. Nenhum dado protegido (CPF, cartão, e-mail...) sai numa resposta automática (invariantes 11 e 23).
-        if (ContemDadoProtegido(rascunho.Texto))
+        // 0b. Dado de identificação ou financeiro nunca sai numa resposta automática (invariantes 11 e 23).
+        //     Dado comum (e-mail, CEP) só se estiver numa fonte citada: conferido junto com os valores (regra 4).
+        if (DadosProtegidos.DetectorDadosProtegidos.Mascarar(rascunho.Texto).Ocorrencias.FirstOrDefault(o => o.Nivel != NivelDadoProtegido.Comum) is { } grave)
         {
-            return ResultadoValidacao.Bloquear(MotivoBloqueio.DadoProtegidoNaResposta);
+            return ResultadoValidacao.Bloquear(MotivoBloqueio.DadoProtegidoNaResposta, grave.Categoria.ToString());
         }
 
         // 1. Estado e versão: um humano pode ter assumido durante a geração.
@@ -145,6 +150,13 @@ public static partial class ValidadorEnvio
         }
 
         var conteudoFontes = string.Join("\n", fontes.Select(f => Normalizacao.ParaComparacao(f.Conteudo)));
+
+        // 7. Pendência de retomada pelo celular ativa: a IA não afirma que o assunto foi resolvido.
+        if (ctx.ConversaAtual.MarcadaRetomadaHumana && AfirmacaoDeResolucao().IsMatch(Normalizacao.ParaComparacao(rascunho.Texto)))
+        {
+            return ResultadoValidacao.Bloquear(MotivoBloqueio.ResolucaoComPendencia);
+        }
+
         return ValidarPadroesEValores(rascunho.Texto, ctx.Politica, conteudoFontes);
     }
 
@@ -156,6 +168,26 @@ public static partial class ValidadorEnvio
     /// </summary>
     private static ResultadoValidacao ValidarPadroesEValores(string original, PoliticaTenant politica, string conteudoFontes)
     {
+        // Dado protegido: só o comum que consta numa fonte citada (autorizado por aprovação humana e pertinente ao
+        // assunto). Depois de conferido, sai do texto analisado: o domínio de um e-mail autorizado não é URL.
+        // Comparação EXATA com os dados detectados na fonte (revisão da F3, G1): por substring, "ro@empresa.com.br" ou
+        // "financeiro@empresa.com" passariam com a fonte "financeiro@empresa.com.br".
+        var mascarado = DadosProtegidos.DetectorDadosProtegidos.Mascarar(original);
+        var autorizados = mascarado.Ocorrencias.Count == 0
+            ? []
+            : DadosProtegidos.DetectorDadosProtegidos.Mascarar(conteudoFontes).Ocorrencias
+                .Where(o => o.Nivel == NivelDadoProtegido.Comum)
+                .Select(o => Normalizacao.ParaComparacao(o.Valor))
+                .ToHashSet(StringComparer.Ordinal);
+        foreach (var ocorrencia in mascarado.Ocorrencias)
+        {
+            if (ocorrencia.Nivel != NivelDadoProtegido.Comum || !autorizados.Contains(Normalizacao.ParaComparacao(ocorrencia.Valor)))
+            {
+                return ResultadoValidacao.Bloquear(MotivoBloqueio.DadoProtegidoNaResposta, ocorrencia.Categoria.ToString());
+            }
+        }
+
+        original = mascarado.Texto;
         var texto = Normalizacao.ParaComparacao(original);
 
         // 5. Padrões proibidos.
@@ -300,6 +332,10 @@ public static partial class ValidadorEnvio
 
     [GeneratedRegex(@"\b(sou|eu sou) (um |uma )?(humano|humana|pessoa|pessoa real|pessoa de verdade|atendente humano|atendente humana|atendente de verdade|ser humano|gente de verdade)\b|\bnao sou (um |uma )?(robo\w*|bot\w*|chatbot|ia|inteligencia artificial|assistente virtual|maquina|programa|automatico|automatica)\b|\b(voce esta|esta) falando com (um |uma )?(humano|humana|pessoa|pessoa real|ser humano|atendente de verdade|gente de verdade)\b|\bde carne e osso\b|\bmeu nome e\b|\bme chamo\b", RegexOptions.None, TimeoutMs)]
     private static partial Regex AutodeclaracaoHumana();
+
+    // Texto já normalizado (minúsculas, sem acentos).
+    [GeneratedRegex(@"\b(resolvid[oa]s?|solucionad[oa]s?|concluid[oa]s?|finalizad[oa]s?|encerrad[oa]s?|providenciad[oa]s?|regularizad[oa]s?|ja (foi|esta|estao|foram) (feit[oa]s?|cert[oa]s?|ok|pront[oa]s?)|(esta|ficou) tudo (certo|ok|resolvido))\b", RegexOptions.None, TimeoutMs)]
+    private static partial Regex AfirmacaoDeResolucao();
 
     [GeneratedRegex(@"^\s*(?:(?:\d{1,2}|[a-z])\s*[\).:\-]|[\-\*\+>])\s*\S", RegexOptions.None, TimeoutMs)]
     private static partial Regex ItemDeLista();

@@ -6,6 +6,26 @@ namespace Seceletesc.Dominio.Testes;
 /// <summary>O que pode ir ao modelo e ser citado. Invariantes 10, 11, 19, 20 e 21.</summary>
 public sealed class ElegibilidadeConhecimentoTestes
 {
+    [Theory]
+    [Trait("Regra", "INV-18")]
+    [Trait("Regra", "INV-21")]
+    [InlineData(Classificacao.Negociacao)]
+    [InlineData(Classificacao.Excecao)]
+    public void Condicao_comercial_sem_cliente_ou_sem_validade_nunca_e_elegivel(Classificacao comercial)
+    {
+        // Revisão da F3 (S13a): reconferido no uso, mesmo que a política libere a classificação.
+        var p = Politica(b => b.Classificacoes.Add(comercial));
+        var c = NovaConversa();
+
+        var paraEmpresa = Fonte("precos", "x", classificacoes: [comercial], validoAte: Agora.AddDays(1));
+        var semValidade = Fonte("precos", "x", classificacoes: [comercial], escopo: new EscopoConhecimento(TipoEscopo.Cliente, c.ClienteId));
+        var valida = Fonte("precos", "x", classificacoes: [comercial], escopo: new EscopoConhecimento(TipoEscopo.Cliente, c.ClienteId), validoAte: Agora.AddDays(1));
+
+        Assert.Equal(MotivoInelegivel.ForaDoEscopo, ElegibilidadeConhecimento.Avaliar(paraEmpresa, p, c, Agora));
+        Assert.NotNull(ElegibilidadeConhecimento.Avaliar(semValidade, p, c, Agora));
+        Assert.Null(ElegibilidadeConhecimento.Avaliar(valida, p, c, Agora));
+    }
+
     [Fact]
     [Trait("Regra", "INV-20")]
     public void Conhecimento_publico_aprovado_vigente_da_empresa_e_elegivel()

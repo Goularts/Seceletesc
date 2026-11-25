@@ -8,34 +8,34 @@
 # Só entram aqui testes que verificam de fato a regra (revisão da F1a: rótulos errados foram removidos).
 
 # F0 Fundação
-INV-10 25  # isolamento entre empresas (RLS, papéis, pool) e escopo de conhecimento
+INV-10 29  # isolamento entre empresas (RLS, papéis, pool) e escopo de conhecimento
 INV-14 9   # restrições no backend: fronteiras, schema estrito do rascunho, normalização
-INV-15 8   # histórico append-only
+INV-15 12   # histórico append-only
 
 # F1a Domínio (validador, estados, elegibilidade, dados protegidos)
 INV-1 2    # sem menus/opções numeradas
-INV-5 14    # IA muda sob controle humano; só liberação explícita volta ao automático
-INV-6 9    # backend decide o envio
-INV-8 2    # não inventar valores
+INV-5 17    # IA muda sob controle humano; só liberação explícita volta ao automático
+INV-6 15    # backend decide o envio
+INV-8 4    # não inventar valores
 INV-9 2    # fora do escopo autorizado
-INV-11 6   # confidencial não vai ao modelo
+INV-11 12   # confidencial não vai ao modelo
 INV-13 1   # não se apresenta como humano
-INV-19 4   # propriedades do conhecimento (validade, classificações)
-INV-20 4   # só conhecimento aprovado e vigente
-INV-21 1   # exceção só no escopo autorizado
-INV-23 12   # dados protegidos detectados e retirados
+INV-19 11   # propriedades do conhecimento (validade, classificações)
+INV-20 9   # só conhecimento aprovado e vigente
+INV-21 2   # exceção só no escopo autorizado
+INV-23 21   # dados protegidos detectados e retirados
 CTX-001 1
 CTX-002 1
 CTX-003 6
 CTX-004 1
 CTX-005 1
 CTX-006 2
-CTX-007 7
+CTX-007 9
 CTX-009 2
 CTX-010 5
 CTX-011 5
-CTX-012 2
-CTX-014 4
+CTX-012 5
+CTX-014 7
 CTX-015 2
 CTX-016 2
 ADV-01 2
@@ -60,19 +60,23 @@ INV-2 1    # sem política, a IA não responde
 INV-3 1    # bloqueio aciona supervisão
 INV-7 2    # bloqueio nunca é regenerado; falha do motor = bloqueio
 INV-12 1   # instrução do cliente não muda a decisão
-INV-16 3   # IA só sugere (Rev)
-INV-17 1   # só humano aprova
-INV-24 3   # fora da janela de 24h: cancela e marca retomada humana
+INV-16 6   # IA só sugere (Rev)
+INV-17 8   # só humano aprova
+INV-24 7   # fora da janela de 24h: cancela e marca retomada humana
 ADV-06 1
-ADV-16 1
-ADV-19 1
+ADV-16 2
+ADV-19 3
 ADV-20 3
 ADV-23 1
 
 # F2 Supervisão (API)
 INV-4 5    # humano responde pelo mesmo número ou orienta
-INV-18 1   # exceção em resposta humana não vira condição geral
+INV-18 6   # exceção em resposta humana não vira condição geral
 ADV-11 1
-ADV-22 2
+ADV-22 3
 
-# Pendentes: INV-24 eco do app (F4), avaliação de pertinência/tom (F5).
+# F3 Governança do conhecimento, papéis e dados proporcionais
+# (mínimos das regras acima já incluem os testes da F3: INV-17, INV-18, INV-19, INV-23, INV-24, CTX-012, CTX-014)
+CTX-013 1  # conhecimento reutilizado tem origem, versão, escopo e autorização
+
+# Pendentes: INV-24 eco do app (F4), avaliação de pertinência/tom (F5), sugestão pela IA (F5, INV-16).

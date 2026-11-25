@@ -121,7 +121,6 @@ public sealed class SupervisaoTravasTestes(BancoFixture banco)
     [Theory]
     [Trait("Regra", "INV-5")]
     [InlineData("update conversas set ultima_mensagem_cliente_em = now() where id = @c", "42501")]
-    [InlineData("update conversas set marcada_retomada_humana = false where id = @c", "42501")]
     [InlineData("update conversas set estado = 'Automatico', versao_estado = versao_estado + 1 where id = @c", "P0001")]
     public async Task Supervisao_nao_mexe_na_janela_nem_volta_ao_automatico_sem_registrar_a_liberacao(string sql, string erroEsperado)
     {

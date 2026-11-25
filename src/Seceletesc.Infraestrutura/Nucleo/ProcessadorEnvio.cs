@@ -2,7 +2,9 @@ using Npgsql;
 using Seceletesc.Aplicacao.Envio;
 using Seceletesc.Dominio.Conhecimento;
 using Seceletesc.Dominio.Conversas;
+using Seceletesc.Dominio.DadosProtegidos;
 using Seceletesc.Infraestrutura.Banco;
+using Seceletesc.Infraestrutura.Criptografia;
 
 namespace Seceletesc.Infraestrutura.Nucleo;
 
@@ -22,7 +24,13 @@ public enum ResultadoCiclo
 /// validade da mensagem. Marca "enviando" antes da chamada HTTP. Resultado ambíguo vira "incerta" e
 /// NUNCA é repetido: preferimos o risco de não enviar ao de enviar duas vezes.
 /// </summary>
-public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGatewayWhatsApp gateway, TimeProvider relogio, TimeSpan? timeoutGateway = null)
+/// <remarks>
+/// Dado protegido no texto enviado (e-mail autorizado numa fonte ou escrito por um humano): o histórico guarda só o
+/// texto mascarado e o valor cifrado (só a chave pública fica aqui); ao terminar, o texto da fila também é trocado
+/// pela versão mascarada. O texto em claro existe só enquanto precisa ser enviado.
+/// </remarks>
+public sealed class ProcessadorEnvio(
+    NpgsqlDataSource dataSourceWorker, IGatewayWhatsApp gateway, TimeProvider relogio, CifradorDadosProtegidos cifrador, TimeSpan? timeoutGateway = null)
 {
     public static readonly TimeSpan Lease = TimeSpan.FromSeconds(60);
 
@@ -54,7 +62,7 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
             if (item.Status == "enviando")
             {
                 // Reserva expirou durante um envio (queda do worker): não se sabe se saiu. Nunca reenviar.
-                await AtualizarAsync(c, tx, outboxId, "incerta", "lease expirado durante o envio", null, null, false, t).ConfigureAwait(false);
+                await AtualizarAsync(c, tx, outboxId, "incerta", "lease expirado durante o envio", null, null, false, t, textoMascarado: Mascarado(item.Texto)).ConfigureAwait(false);
                 await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, item.ConversaId, "envio_incerto", new { outbox = outboxId, motivo = "lease expirado" }, t).ConfigureAwait(false);
                 return (ResultadoCiclo.Incerta, null);
             }
@@ -71,7 +79,7 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
             var motivo = await MotivoParaCancelarAsync(c, tx, item, conversa, politica, agora, t).ConfigureAwait(false);
             if (motivo is not null)
             {
-                await AtualizarAsync(c, tx, outboxId, "cancelada", motivo, null, null, false, t).ConfigureAwait(false);
+                await AtualizarAsync(c, tx, outboxId, "cancelada", motivo, null, null, false, t, textoMascarado: Mascarado(item.Texto)).ConfigureAwait(false);
                 await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, conversa.Id, "envio_cancelado", new { outbox = outboxId, motivo }, t).ConfigureAwait(false);
                 if (motivo == MotivoForaDaJanela)
                 {
@@ -119,8 +127,9 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
             {
                 case SituacaoEnvio.Enviada:
                     // Se outra instância já marcou "incerta" (reserva vencida), o registro do envio ainda entra no histórico.
-                    var confirmada = await AtualizarAsync(c, tx, outboxId, "enviada", null, resultado.Wamid, null, false, t, exigirStatus: "enviando").ConfigureAwait(false);
-                    await RepositorioNucleo.InserirMensagemAsync(c, tx, Guid.NewGuid(), tenantId, envio.ConversaId, "saida", envio.Texto, resultado.Wamid, relogio.GetUtcNow(), t).ConfigureAwait(false);
+                    var confirmada = await AtualizarAsync(c, tx, outboxId, "enviada", null, resultado.Wamid, null, false, t,
+                        exigirStatus: "enviando", textoMascarado: Mascarado(envio.Texto)).ConfigureAwait(false);
+                    await RegistrarEnviadaAsync(c, tx, tenantId, envio.ConversaId, envio.Texto, resultado.Wamid, t).ConfigureAwait(false);
                     await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, envio.ConversaId, confirmada ? "mensagem_enviada" : "mensagem_enviada_apos_incerta",
                         new { outbox = outboxId, decisao = envio.DecisaoId, autor = envio.AutorId }, t).ConfigureAwait(false);
                     return ResultadoCiclo.Enviada;
@@ -129,12 +138,12 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
                     await AtualizarAsync(c, tx, outboxId, "pendente", resultado.Detalhe, null, null, false, t).ConfigureAwait(false);
                     return ResultadoCiclo.DevolvidaParaFila;
                 case SituacaoEnvio.FalhaDefinitiva:
-                    await AtualizarAsync(c, tx, outboxId, "cancelada", "falha definitiva: " + resultado.Detalhe, null, null, false, t).ConfigureAwait(false);
+                    await AtualizarAsync(c, tx, outboxId, "cancelada", "falha definitiva: " + resultado.Detalhe, null, null, false, t, textoMascarado: Mascarado(envio.Texto)).ConfigureAwait(false);
                     await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, envio.ConversaId, "envio_cancelado", new { outbox = outboxId, motivo = resultado.Detalhe }, t).ConfigureAwait(false);
                     await TransferirParaSupervisaoAsync(c, tx, envio.ConversaId, "falha definitiva no envio", t).ConfigureAwait(false);
                     return ResultadoCiclo.Cancelada;
                 default:
-                    await AtualizarAsync(c, tx, outboxId, "incerta", resultado.Detalhe, null, null, false, t).ConfigureAwait(false);
+                    await AtualizarAsync(c, tx, outboxId, "incerta", resultado.Detalhe, null, null, false, t, textoMascarado: Mascarado(envio.Texto)).ConfigureAwait(false);
                     await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, envio.ConversaId, "envio_incerto", new { outbox = outboxId, motivo = resultado.Detalhe }, t).ConfigureAwait(false);
                     // Um humano precisa conferir se a mensagem chegou.
                     await TransferirParaSupervisaoAsync(c, tx, envio.ConversaId, "envio incerto", t).ConfigureAwait(false);
@@ -178,6 +187,14 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
             if (conversa.Estado != EstadoConversa.Automatico || conversa.VersaoEstado != item.VersaoDecisao)
             {
                 return MotivoEstadoMudou;
+            }
+
+            // Trava compartilhada por item citado: uma revogação em andamento termina antes desta leitura (ou espera o fim
+            // desta transação). Ver ServicoConhecimento.LerItemComTravaAsync.
+            await using (var trava = RepositorioNucleo.Cmd(c, tx, "select count(pg_advisory_xact_lock_shared(hashtextextended(x::text, 0))) from unnest(@ids) x"))
+            {
+                trava.Parameters.Add(new NpgsqlParameter("ids", NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Uuid) { Value = item.FontesCitadas.Select(k => k.ItemId).Distinct().ToArray() });
+                await trava.ExecuteScalarAsync(ct).ConfigureAwait(false);
             }
 
             var fontes = await RepositorioNucleo.ObterFontesAsync(c, tx, item.FontesCitadas, ct).ConfigureAwait(false);
@@ -235,13 +252,15 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
 
     private static async Task<bool> AtualizarAsync(
         NpgsqlConnection c, NpgsqlTransaction tx, Guid id, string status, string? motivo, string? wamid, DateTimeOffset? leaseAte, bool incrementar,
-        CancellationToken ct, string? exigirStatus = null)
+        CancellationToken ct, string? exigirStatus = null, string? textoMascarado = null)
     {
         await using var cmd = RepositorioNucleo.Cmd(c, tx, """
             update outbox set status = @s, motivo = coalesce(@m, motivo), wamid = coalesce(@w, wamid), lease_ate = @l,
-                   tentativas = tentativas + case when @inc then 1 else 0 end
+                   tentativas = tentativas + case when @inc then 1 else 0 end,
+                   texto = coalesce(@tm::text, texto), texto_mascarado = texto_mascarado or @tm::text is not null
              where id = @id and (@exigir::text is null or status = @exigir::text)
             """);
+        cmd.Parameters.AddWithValue("tm", (object?)textoMascarado ?? DBNull.Value);
         cmd.Parameters.AddWithValue("exigir", (object?)exigirStatus ?? DBNull.Value);
         cmd.Parameters.AddWithValue("s", status);
         cmd.Parameters.AddWithValue("m", (object?)motivo ?? DBNull.Value);
@@ -250,6 +269,29 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
         cmd.Parameters.AddWithValue("inc", incrementar);
         cmd.Parameters.AddWithValue("id", id);
         return await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false) == 1;
+    }
+
+    /// <summary>Versão mascarada do texto, ou nulo se ele não tem dado protegido (o texto fica como está).</summary>
+    private static string? Mascarado(string texto)
+    {
+        var m = DetectorDadosProtegidos.Mascarar(texto);
+        return m.Ocorrencias.Count > 0 ? m.Texto : null;
+    }
+
+    /// <summary>Histórico do envio: texto mascarado e cada dado protegido cifrado, amarrado a esta mensagem.</summary>
+    private async Task RegistrarEnviadaAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid tenantId, Guid conversaId, string texto, string? wamid, CancellationToken ct)
+    {
+        var mascarado = DetectorDadosProtegidos.Mascarar(texto);
+        var mensagemId = Guid.NewGuid();
+        await RepositorioNucleo.InserirMensagemAsync(c, tx, mensagemId, tenantId, conversaId, "saida",
+            mascarado.Ocorrencias.Count > 0 ? mascarado.Texto : texto, wamid, relogio.GetUtcNow(), ct).ConfigureAwait(false);
+        foreach (var ocorrencia in mascarado.Ocorrencias)
+        {
+            var dadoId = Guid.NewGuid();
+            var categoria = ocorrencia.Categoria.ToString();
+            var cifrado = cifrador.Cifrar(ocorrencia.Valor, new ContextoCifragem(tenantId, dadoId, conversaId, mensagemId, categoria));
+            await RepositorioNucleo.InserirDadoProtegidoAsync(c, tx, dadoId, tenantId, conversaId, mensagemId, categoria, cifrado, ct).ConfigureAwait(false);
+        }
     }
 
     private static async Task TransferirParaSupervisaoAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid conversaId, string motivo, CancellationToken ct)

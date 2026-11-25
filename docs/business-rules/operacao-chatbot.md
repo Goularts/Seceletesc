@@ -52,11 +52,19 @@ A orientação interna pode conter informação específica. Por isso ela não v
 - O sistema não envia templates pela API para retomar conversas.
 - Quando a conversa precisa de retomada fora da janela, o cliente recebe uma **marcação** no painel de acompanhamento, com o status da conversa e um resumo para consulta interna. O resumo não é enviado ao cliente e não contém dados protegidos (seção 3a).
 - A retomada é feita por um humano pelo celular (mesmo número de WhatsApp). Toda mensagem enviada pelo humano por fora da API coloca a conversa sob controle humano e é registrada no histórico.
+- A marcação (pendência de retomada pelo celular) fica **ativa até ser encerrada explicitamente** por um humano autorizado (supervisor ou administrador), com responsável, data e motivo registrados. Liberar a conversa para a IA **não** encerra a pendência.
+- Enquanto a pendência estiver ativa, a IA não pode afirmar que o assunto foi resolvido. A pendência é visível na supervisão.
 
 ## 3a. Dados protegidos do cliente
 
 - Dados pessoais sensíveis enviados pelo cliente na conversa (ex.: CPF, documentos, dados de pagamento) são **criptografados** no banco e **nunca** são entregues ao motor de IA: ele recebe um marcador no lugar do dado.
 - Só humanos com permissão podem ver o dado original.
+- **Tratamento proporcional ao risco** (decisão do Victor, 2026-11-25), igual para respostas automáticas e respostas humanas enviadas pela API:
+  - **Dado pessoal comum** (e-mail, CEP): usado só quando necessário, autorizado e pertinente ao atendimento. Na resposta automática, só se constar numa fonte aprovada citada; na resposta humana, quem autoriza é o humano. Depois do envio, o histórico guarda só o texto mascarado e o valor criptografado.
+  - **Dado de identificação** (CPF, CNPJ, RG, documentos, chave PIX): exige finalidade definida e acesso restrito. Enquanto não houver mecanismo de finalidade, não sai em mensagem nenhuma; o atendimento é feito pelo humano por outro meio.
+  - **Dado financeiro confidencial** (número completo de cartão): nunca reproduzido em mensagem nem armazenado em texto puro.
+  - **Dados de outros clientes ou empresas**: acesso e divulgação proibidos.
+- A proteção vale também para entrada, armazenamento, logs e auditoria: logs e eventos não registram o valor do dado. Sem autorização ou mecanismo seguro para um dado, a operação é bloqueada e encaminhada ao tratamento humano.
 - O telefone do cliente e o texto das conversas são armazenados no histórico e o texto é lido pela IA para responder (decisão do Victor, 2026-11-24). Os dados enviados à IA são usados só para o atendimento e para uso interno.
 
 ## 3. Validação das respostas (autoridade do backend)

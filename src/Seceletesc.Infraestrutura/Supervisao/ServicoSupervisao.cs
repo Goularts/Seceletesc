@@ -11,8 +11,26 @@ using Seceletesc.Infraestrutura.Nucleo;
 
 namespace Seceletesc.Infraestrutura.Supervisao;
 
-/// <summary>Usuário humano autenticado. O tenant vem daqui, nunca da requisição.</summary>
-public sealed record UsuarioSupervisao(Guid Id, Guid TenantId);
+/// <summary>
+/// Papéis humanos (decisão do Victor, 2026-11-25, F3). Cada papel inclui as permissões do anterior.
+/// Atendente: vê conversas, assume, responde, orienta e sugere conhecimento.
+/// Supervisor: libera conversas, encerra pendências de retomada, revisa, edita, rejeita e aprova conhecimento comum.
+/// Administrador: publica a política, aprova conhecimento de maior risco (NEG, EXC, RES, CLI) e revoga.
+/// </summary>
+public enum PapelSupervisao
+{
+    Atendente,
+    Supervisor,
+    Administrador,
+}
+
+/// <summary>Usuário humano autenticado. O tenant e o papel vêm daqui, nunca da requisição.</summary>
+public sealed record UsuarioSupervisao(Guid Id, Guid TenantId, PapelSupervisao Papel)
+{
+    public bool PodeGerirAtendimento => Papel >= PapelSupervisao.Supervisor;
+
+    public bool EhAdministrador => Papel == PapelSupervisao.Administrador;
+}
 
 public enum SituacaoOperacao
 {
@@ -20,6 +38,7 @@ public enum SituacaoOperacao
     NaoEncontrada,
     Conflito,
     Invalida,
+    Proibida,
 }
 
 public sealed record ResultadoOperacao(SituacaoOperacao Situacao, string? Detalhe = null, long? Versao = null, Guid? Id = null)
@@ -29,11 +48,13 @@ public sealed record ResultadoOperacao(SituacaoOperacao Situacao, string? Detalh
     public static ResultadoOperacao Conflito(string detalhe, long? versao = null) => new(SituacaoOperacao.Conflito, detalhe, versao);
 
     public static ResultadoOperacao Invalida(string detalhe) => new(SituacaoOperacao.Invalida, detalhe);
+
+    public static ResultadoOperacao Proibida(string detalhe) => new(SituacaoOperacao.Proibida, detalhe);
 }
 
 public sealed record ResumoConversa(
     Guid Id, string WaIdCliente, string Estado, long VersaoEstado, DateTimeOffset? UltimaMensagemClienteEm,
-    bool DentroDaJanela24h, bool MarcadaRetomadaHumana);
+    bool DentroDaJanela24h, bool MarcadaRetomadaHumana, DateTimeOffset? RetomadaEncerradaEm, string? RetomadaMotivo);
 
 public sealed record MensagemConversa(string Direcao, string Texto, DateTimeOffset OcorridaEm);
 
@@ -76,10 +97,12 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
         }
 
         await using var c = await dataSourceSupervisao.OpenConnectionAsync(ct).ConfigureAwait(false);
-        await using var cmd = new NpgsqlCommand("select usuario_id, tenant_id from autenticar_supervisor(@h)", c);
+        await using var cmd = new NpgsqlCommand("select usuario_id, tenant_id, papel from autenticar_supervisor(@h)", c);
         cmd.Parameters.AddWithValue("h", HashChave(chave));
         await using var r = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        return await r.ReadAsync(ct).ConfigureAwait(false) ? new UsuarioSupervisao(r.GetGuid(0), r.GetGuid(1)) : null;
+        return await r.ReadAsync(ct).ConfigureAwait(false)
+            ? new UsuarioSupervisao(r.GetGuid(0), r.GetGuid(1), Enum.Parse<PapelSupervisao>(r.GetString(2)))
+            : null;
     }
 
     public Task<IReadOnlyList<ResumoConversa>> ListarConversasAsync(UsuarioSupervisao usuario, string? estado, CancellationToken ct = default)
@@ -190,10 +213,15 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
     /// Liberação explícita (invariante 5). Exige a versão que o humano viu: se a conversa mudou nesse meio-tempo
     /// (outro humano, nova transferência), a liberação é recusada em vez de devolver à IA algo que ele não viu.
     /// </summary>
-    public Task<ResultadoOperacao> LiberarAsync(UsuarioSupervisao usuario, Guid conversaId, long versaoEsperada, CancellationToken ct = default)
+    public async Task<ResultadoOperacao> LiberarAsync(UsuarioSupervisao usuario, Guid conversaId, long versaoEsperada, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(usuario);
-        return _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        if (!usuario.PodeGerirAtendimento)
+        {
+            return ResultadoOperacao.Proibida("liberar a conversa para a IA exige supervisor ou administrador");
+        }
+
+        return await _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
         {
             var conversa = await RepositorioNucleo.ObterConversaComTravaAsync(c, tx, conversaId, t).ConfigureAwait(false);
             if (conversa is null)
@@ -223,21 +251,73 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
             }
 
             var transicao = conversa.Liberar(relogio.GetUtcNow(), "liberada pela supervisão");
-            await AtualizarEstadoAsync(c, tx, conversa, t).ConfigureAwait(false);
+            await AtualizarEstadoAsync(c, tx, conversa, t, liberadaPor: usuario.Id).ConfigureAwait(false);
             await RepositorioNucleo.InserirEventoAsync(c, tx, usuario.TenantId, conversaId, "conversa_liberada",
                 new { usuario = usuario.Id, versao = transicao.NovaVersao }, t).ConfigureAwait(false);
             return new ResultadoOperacao(SituacaoOperacao.Ok, Versao: transicao.NovaVersao);
-        }, ct);
+        }, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Encerra a pendência de retomada pelo celular. Só supervisor ou administrador, com motivo; o banco carimba a
+    /// data e confere o papel. Liberar a conversa não encerra a pendência.
+    /// </summary>
+    public async Task<ResultadoOperacao> EncerrarRetomadaAsync(UsuarioSupervisao usuario, Guid conversaId, string? motivo, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(usuario);
+        if (!usuario.PodeGerirAtendimento)
+        {
+            return ResultadoOperacao.Proibida("encerrar a pendência de retomada exige supervisor ou administrador");
+        }
+
+        if (string.IsNullOrWhiteSpace(motivo) || motivo.Length > 500)
+        {
+            return ResultadoOperacao.Invalida("motivo obrigatório, com até 500 caracteres");
+        }
+
+        // O motivo fica no histórico em claro: nenhum dado protegido, nem comum.
+        if (ContemDadoProtegido(motivo))
+        {
+            return ResultadoOperacao.Invalida("o motivo contém dado protegido");
+        }
+
+        return await _executor.ExecutarAsync(usuario.TenantId, async (c, tx, t) =>
+        {
+            var conversa = await RepositorioNucleo.ObterConversaComTravaAsync(c, tx, conversaId, t).ConfigureAwait(false);
+            if (conversa is null)
+            {
+                return ResultadoOperacao.NaoEncontrada;
+            }
+
+            if (!conversa.MarcadaRetomadaHumana)
+            {
+                return ResultadoOperacao.Conflito("a conversa não tem pendência de retomada ativa", conversa.VersaoEstado);
+            }
+
+            await using (var cmd = RepositorioNucleo.Cmd(c, tx, """
+                update conversas set marcada_retomada_humana = false, retomada_encerrada_por = @u, retomada_motivo = @m where id = @id
+                """))
+            {
+                cmd.Parameters.AddWithValue("u", usuario.Id);
+                cmd.Parameters.AddWithValue("m", motivo.Trim());
+                cmd.Parameters.AddWithValue("id", conversaId);
+                await cmd.ExecuteNonQueryAsync(t).ConfigureAwait(false);
+            }
+
+            await RepositorioNucleo.InserirEventoAsync(c, tx, usuario.TenantId, conversaId, "retomada_encerrada",
+                new { usuario = usuario.Id, motivo = motivo.Trim() }, t).ConfigureAwait(false);
+            return new ResultadoOperacao(SituacaoOperacao.Ok, Versao: conversa.VersaoEstado);
+        }, ct).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Resposta humana pelo mesmo número (invariante 4). Só com a conversa sob controle humano. Entra na fila
-    /// com autor e é enviada pelo worker. Texto com dado protegido é recusado: o dado não fica guardado em claro.
+    /// com autor e é enviada pelo worker. Dado protegido com tratamento proporcional (ver ValidarTextoHumano).
     /// </summary>
     public async Task<ResultadoOperacao> ResponderAsync(UsuarioSupervisao usuario, Guid conversaId, string? texto, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(usuario);
-        if (ValidarTexto(texto) is { } invalido)
+        if (ValidarTextoHumano(texto) is { } invalido)
         {
             return invalido;
         }
@@ -290,9 +370,16 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
     public async Task<ResultadoOperacao> OrientarAsync(UsuarioSupervisao usuario, Guid conversaId, string? texto, string? assunto, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(usuario);
-        if (ValidarTexto(texto) is { } invalido)
+        if (ValidarTextoHumano(texto) is { } invalido)
         {
             return invalido;
+        }
+
+        // A orientação fica em claro na base de sugestões e é sobre esta conversa: nenhum dado protegido, nem comum
+        // (dado do cliente nunca chega ao modelo, invariante 23).
+        if (ContemDadoProtegido(texto!))
+        {
+            return ResultadoOperacao.Invalida("a orientação não pode conter dado protegido; descreva sem o dado");
         }
 
         if (string.IsNullOrWhiteSpace(assunto) || assunto.Length > TamanhoMaximoAssunto)
@@ -362,6 +449,12 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
     public async Task<ResultadoOperacao> PublicarPoliticaAsync(UsuarioSupervisao usuario, int versaoEsperada, string? conteudoJson, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(usuario);
+        // Classificações liberadas, termos de compromisso e envio de conhecimento de cliente são restrições críticas.
+        if (!usuario.EhAdministrador)
+        {
+            return ResultadoOperacao.Proibida("publicar a política exige administrador");
+        }
+
         PoliticaTenant politica;
         try
         {
@@ -391,8 +484,9 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
                     }
                 }
 
-                await using (var cmd = RepositorioNucleo.Cmd(c, tx, "insert into politicas_tenant (tenant_id, versao, conteudo) values (@t, @v, @c::jsonb)"))
+                await using (var cmd = RepositorioNucleo.Cmd(c, tx, "insert into politicas_tenant (tenant_id, versao, conteudo, publicada_por) values (@t, @v, @c::jsonb, @u)"))
                 {
+                    cmd.Parameters.AddWithValue("u", usuario.Id);
                     cmd.Parameters.AddWithValue("t", usuario.TenantId);
                     cmd.Parameters.AddWithValue("v", versaoEsperada + 1);
                     cmd.Parameters.AddWithValue("c", canonica);
@@ -462,18 +556,27 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
         return null;
     }
 
-    private static ResultadoOperacao? ValidarTexto(string? texto)
+    /// <summary>
+    /// Texto escrito por um humano. Tratamento proporcional ao risco: dado comum (e-mail, CEP) é aceito, porque o
+    /// humano autorizado decide se é necessário e pertinente. Numa resposta enviada, o worker o mascara e cifra no
+    /// histórico. Numa sugestão avulsa de conhecimento, fica em claro de propósito: é dado da empresa que precisa
+    /// estar na fonte para sair na resposta (orientação e sugestão ligadas a conversa recusam qualquer dado).
+    /// Dado de identificação (CPF etc.) exige finalidade definida, que ainda não tem mecanismo, e dado financeiro
+    /// (cartão) nunca é reproduzido: os dois são recusados.
+    /// A mensagem de erro cita só a categoria, nunca o valor.
+    /// </summary>
+    internal static ResultadoOperacao? ValidarTextoHumano(string? texto)
     {
         if (string.IsNullOrWhiteSpace(texto) || texto.Length > TamanhoMaximoTexto)
         {
             return ResultadoOperacao.Invalida($"texto obrigatório, com até {TamanhoMaximoTexto} caracteres");
         }
 
-        var mascarado = DetectorDadosProtegidos.Mascarar(texto!);
-        if (mascarado.Ocorrencias.Count > 0)
+        var graves = DetectorDadosProtegidos.Mascarar(texto).Ocorrencias.Where(o => o.Nivel != NivelDadoProtegido.Comum).ToList();
+        if (graves.Count > 0)
         {
-            var categorias = string.Join(", ", mascarado.Ocorrencias.Select(o => o.Categoria).Distinct());
-            return ResultadoOperacao.Invalida($"o texto contém dado protegido ({categorias}); ele não é guardado em claro. Trate pelo celular.");
+            var categorias = string.Join(", ", graves.Select(o => o.Categoria).Distinct());
+            return ResultadoOperacao.Invalida($"o texto contém dado protegido ({categorias}) sem finalidade autorizada para envio. Trate pelo celular.");
         }
 
         return null;
@@ -482,9 +585,15 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
     private static bool ContemDadoProtegido(string texto) => DetectorDadosProtegidos.Mascarar(texto).Ocorrencias.Count > 0;
 
     /// <summary>Só os campos que as transições da supervisão alteram (o papel não tem permissão para os demais).</summary>
-    private static async Task AtualizarEstadoAsync(NpgsqlConnection c, NpgsqlTransaction tx, Conversa conversa, CancellationToken ct)
+    private static async Task AtualizarEstadoAsync(NpgsqlConnection c, NpgsqlTransaction tx, Conversa conversa, CancellationToken ct, Guid? liberadaPor = null)
     {
-        await using var cmd = RepositorioNucleo.Cmd(c, tx, "update conversas set estado = @e, versao_estado = @v, liberada_em = @l where id = @id");
+        // Na liberação, o banco exige o responsável (supervisor ou administrador) e confere o papel.
+        await using var cmd = RepositorioNucleo.Cmd(c, tx, """
+            update conversas set estado = @e, versao_estado = @v, liberada_em = @l,
+                   liberada_por = case when @lp::uuid is null then liberada_por else @lp::uuid end
+             where id = @id
+            """);
+        cmd.Parameters.Add(new NpgsqlParameter("lp", NpgsqlTypes.NpgsqlDbType.Uuid) { Value = (object?)liberadaPor ?? DBNull.Value });
         cmd.Parameters.AddWithValue("e", conversa.Estado.ToString());
         cmd.Parameters.AddWithValue("v", conversa.VersaoEstado);
         cmd.Parameters.AddWithValue("l", (object?)conversa.LiberadaEm ?? DBNull.Value);
@@ -494,7 +603,7 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
 
     private const string SelectResumo = """
         select cv.id, cl.wa_id, cv.estado, cv.versao_estado, cv.ultima_mensagem_cliente_em, cv.marcada_retomada_humana,
-               cv.cliente_id, cv.tenant_id, cv.liberada_em
+               cv.cliente_id, cv.tenant_id, cv.liberada_em, cv.retomada_encerrada_em, cv.retomada_motivo
           from conversas cv join clientes cl on cl.id = cv.cliente_id
         """;
 
@@ -509,7 +618,8 @@ public sealed class ServicoSupervisao(NpgsqlDataSource dataSourceSupervisao, Tim
             var estado = r.GetString(2);
             var conversa = Conversa.Restaurar(r.GetGuid(0), r.GetGuid(7), r.GetGuid(6), Enum.Parse<EstadoConversa>(estado), r.GetInt64(3),
                 ultima, r.IsDBNull(8) ? null : r.GetFieldValue<DateTimeOffset>(8), r.GetBoolean(5));
-            lista.Add(new ResumoConversa(conversa.Id, r.GetString(1), estado, conversa.VersaoEstado, ultima, conversa.DentroDaJanela24h(agora), conversa.MarcadaRetomadaHumana));
+            lista.Add(new ResumoConversa(conversa.Id, r.GetString(1), estado, conversa.VersaoEstado, ultima, conversa.DentroDaJanela24h(agora), conversa.MarcadaRetomadaHumana,
+                r.IsDBNull(9) ? null : r.GetFieldValue<DateTimeOffset>(9), r.IsDBNull(10) ? null : r.GetString(10)));
         }
 
         return lista;
