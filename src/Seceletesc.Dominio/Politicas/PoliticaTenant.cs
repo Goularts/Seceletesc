@@ -36,10 +36,22 @@ public sealed record PoliticaTenant
     /// <summary>Validade de uma mensagem automática na fila de envio.</summary>
     public TimeSpan ValidadeMensagemAutomatica { get; init; } = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// Padrão técnico conservador (só restringe). O conteúdo precisa ser validado pelo Victor antes do piloto (F7).
+    /// Um termo da lista só pode aparecer numa resposta se aparecer numa fonte citada.
+    /// </summary>
     public static IReadOnlyList<string> TermosCompromissoPadrao { get; } =
     [
-        "aprovado", "aprovada", "garantido", "garantida", "garantimos", "confirmado", "confirmada",
-        "reservado", "reservada", "prometo", "prometemos", "sem custo", "gratis", "gratuito", "desconto",
-        "amanha", "hoje", "agora mesmo", "ainda hoje",
+        // Compromisso e aprovação
+        "aprovado", "aprovada", "garantido", "garantida", "garantimos", "garantia", "assegurado", "assegurada",
+        "asseguramos", "confirmado", "confirmada", "confirmamos", "reservado", "reservada", "liberado", "liberada",
+        "prometo", "prometemos", "compromisso", "certeza",
+        // Condições comerciais
+        "sem custo", "custo zero", "gratis", "gratuito", "gratuita", "de graca", "isento", "isenta", "isencao",
+        "desconto", "promocao", "cortesia", "reembolso", "estorno", "devolucao", "parcelamento", "sem juros",
+        // Tempo relativo e datas por extenso
+        "amanha", "hoje", "agora mesmo", "ainda hoje", "semana que vem", "proxima semana", "mes que vem", "proximo mes",
+        "janeiro", "fevereiro", "marco", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+        "segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo", "feriado",
     ];
 }

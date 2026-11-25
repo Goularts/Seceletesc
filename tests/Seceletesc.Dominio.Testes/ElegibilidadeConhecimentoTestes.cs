@@ -52,8 +52,8 @@ public sealed class ElegibilidadeConhecimentoTestes
     public void Excecao_so_e_elegivel_se_a_politica_permitir_e_dentro_do_escopo_aprovado()
     {
         var c = NovaConversa();
-        var excecaoDoAtendimento = Fonte("precos", "x", classificacoes: [Classificacao.Excecao], escopo: new EscopoConhecimento(TipoEscopo.Atendimento, c.Id));
-        var excecaoDeOutroAtendimento = Fonte("precos", "x", classificacoes: [Classificacao.Excecao], escopo: new EscopoConhecimento(TipoEscopo.Atendimento, Guid.NewGuid()));
+        var excecaoDoAtendimento = Fonte("precos", "x", classificacoes: [Classificacao.Excecao], escopo: new EscopoConhecimento(TipoEscopo.Atendimento, c.Id), validoAte: Agora.AddDays(30));
+        var excecaoDeOutroAtendimento = Fonte("precos", "x", classificacoes: [Classificacao.Excecao], escopo: new EscopoConhecimento(TipoEscopo.Atendimento, Guid.NewGuid()), validoAte: Agora.AddDays(30));
         var politicaPermiteExc = Politica(p => p.Classificacoes.Add(Classificacao.Excecao));
 
         Assert.Equal(MotivoInelegivel.ClassificacaoNaoPermitida, ElegibilidadeConhecimento.Avaliar(excecaoDoAtendimento, Politica(), c, Agora));
@@ -63,11 +63,11 @@ public sealed class ElegibilidadeConhecimentoTestes
 
     [Fact]
     [Trait("Regra", "INV-11")]
-    [Trait("Regra", "INV-23")]
+    [Trait("Regra", "CTX-007")]
     public void Conhecimento_de_cliente_e_minimizado_por_padrao_mesmo_que_a_classificacao_seja_permitida()
     {
         var c = NovaConversa();
-        var cli = Fonte("horario", "x", classificacoes: [Classificacao.Cliente], escopo: new EscopoConhecimento(TipoEscopo.Cliente, Cliente));
+        var cli = Fonte("horario", "x", classificacoes: [Classificacao.Cliente], escopo: new EscopoConhecimento(TipoEscopo.Cliente, Cliente), validoAte: Agora.AddDays(30));
         var politica = Politica(p => p.Classificacoes.Add(Classificacao.Cliente));
 
         Assert.Equal(MotivoInelegivel.ConhecimentoDeClienteMinimizado, ElegibilidadeConhecimento.Avaliar(cli, politica, c, Agora));
@@ -77,7 +77,7 @@ public sealed class ElegibilidadeConhecimentoTestes
     [Trait("Regra", "INV-19")]
     public void Classificacoes_coexistem_e_todas_precisam_ser_permitidas()
     {
-        var pubEInt = Fonte("horario", "x", classificacoes: [Classificacao.Publico, Classificacao.Interno]);
+        var pubEInt = Fonte("horario", "x", classificacoes: [Classificacao.Publico, Classificacao.Interno], validoAte: Agora.AddDays(30));
 
         Assert.Equal(MotivoInelegivel.ClassificacaoNaoPermitida, ElegibilidadeConhecimento.Avaliar(pubEInt, Politica(), NovaConversa(), Agora));
     }
@@ -86,8 +86,43 @@ public sealed class ElegibilidadeConhecimentoTestes
     [Trait("Regra", "INV-19")]
     public void Conhecimento_sem_classificacao_nao_e_elegivel()
     {
-        var semClassificacao = Fonte("horario", "x", classificacoes: []);
+        var semClassificacao = Fonte("horario", "x", classificacoes: [], validoAte: Agora.AddDays(30));
 
         Assert.Equal(MotivoInelegivel.ClassificacaoNaoPermitida, ElegibilidadeConhecimento.Avaliar(semClassificacao, Politica(), NovaConversa(), Agora));
+    }
+
+    [Fact]
+    [Trait("Regra", "CTX-007")]
+    [Trait("Regra", "INV-10")]
+    public void Conhecimento_de_cliente_com_escopo_de_empresa_nao_vale_para_outros_clientes()
+    {
+        var cliEmpresa = Fonte("horario", "x", classificacoes: [Classificacao.Cliente], escopo: EscopoConhecimento.Empresa, validoAte: Agora.AddDays(30));
+        var politica = Politica(p => p.Classificacoes.Add(Classificacao.Cliente)) with { EnviarConhecimentoClienteAoModelo = true };
+
+        Assert.Equal(MotivoInelegivel.ForaDoEscopo, ElegibilidadeConhecimento.Avaliar(cliEmpresa, politica, NovaConversa(), Agora));
+    }
+
+    [Theory]
+    [Trait("Regra", "CTX-006")]
+    [Trait("Regra", "INV-19")]
+    [InlineData(Classificacao.Temporario)]
+    [InlineData(Classificacao.Excecao)]
+    [InlineData(Classificacao.Cliente)]
+    public void So_conhecimento_publico_pode_ficar_sem_validade(Classificacao classificacao)
+    {
+        var semValidade = Fonte("horario", "x", classificacoes: [classificacao], validoAte: null);
+        var politica = Politica(p => p.Classificacoes.Add(classificacao));
+
+        Assert.Equal(MotivoInelegivel.SemValidade, ElegibilidadeConhecimento.Avaliar(semValidade, politica, NovaConversa(), Agora));
+    }
+
+    [Fact]
+    [Trait("Regra", "ADV-08")]
+    [Trait("Regra", "CTX-014")]
+    public void Versao_que_nao_e_a_vigente_nao_e_elegivel()
+    {
+        var antiga = Fonte("horario", "x") with { EhVersaoVigente = false };
+
+        Assert.Equal(MotivoInelegivel.VersaoNaoVigente, ElegibilidadeConhecimento.Avaliar(antiga, Politica(), NovaConversa(), Agora));
     }
 }

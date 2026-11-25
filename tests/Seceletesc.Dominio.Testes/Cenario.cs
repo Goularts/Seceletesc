@@ -63,7 +63,6 @@ internal static class Cenario
             politica,
             fontes.Select(f => f.Chave).ToHashSet(),
             fontes.ToDictionary(f => f.Chave),
-            TelefoneCliente,
             Agora);
 
     public static RascunhoResposta Rascunho(string texto, string assunto, params FonteConhecimento[] fontes) =>

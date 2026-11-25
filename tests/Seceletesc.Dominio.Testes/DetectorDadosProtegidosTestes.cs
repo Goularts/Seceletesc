@@ -20,6 +20,14 @@ public sealed class DetectorDadosProtegidosTestes
     [InlineData("email fulano.teste@exemplo.com.br", CategoriaDadoProtegido.Email)]
     [InlineData("CEP 01310-100", CategoriaDadoProtegido.Cep)]
     [InlineData("cep: 01310100", CategoriaDadoProtegido.Cep)]
+    [InlineData("cpf 529 982 247 25", CategoriaDadoProtegido.Cpf)]
+    [InlineData("cpf 529.982.247\u201325", CategoriaDadoProtegido.Cpf)]
+    [InlineData("CEP 01.310-100", CategoriaDadoProtegido.Cep)]
+    [InlineData("cartão 4111.1111.1111.1111", CategoriaDadoProtegido.Cartao)]
+    [InlineData("RG 12345678-9", CategoriaDadoProtegido.Rg)]
+    [InlineData("pix 123e4567-e89b-12d3-a456-426614174000", CategoriaDadoProtegido.ChavePix)]
+    [InlineData("email fulano arroba gmail ponto com", CategoriaDadoProtegido.Email)]
+    [InlineData("sus 898 0012 3456 7890", CategoriaDadoProtegido.Documento)]
     public void Dado_protegido_e_substituido_por_marcador(string texto, CategoriaDadoProtegido categoria)
     {
         var r = DetectorDadosProtegidos.Mascarar(texto);
@@ -34,6 +42,8 @@ public sealed class DetectorDadosProtegidosTestes
     [Trait("Regra", "INV-23")]
     [InlineData("CPF ５２９.９８２.２４７-２５")]      // dígitos de largura total
     [InlineData("CPF 529.982​.247-25")]          // caractere de largura zero no meio
+    [InlineData("CPF \u0665\u0662\u0669\u0669\u0668\u0662\u0662\u0664\u0667\u0662\u0665")] // dígitos árabe-índicos
+    [InlineData("CPF 529.982\u2066.247-25")] // isolamento bidi no meio
     public void Truques_de_unicode_nao_escondem_o_dado(string texto)
     {
         var r = DetectorDadosProtegidos.Mascarar(texto);
@@ -54,9 +64,11 @@ public sealed class DetectorDadosProtegidosTestes
 
     [Fact]
     [Trait("Regra", "INV-23")]
-    public void Numero_de_cartao_invalido_pelo_luhn_nao_e_marcado()
+    public void Numero_de_cartao_invalido_pelo_luhn_nao_e_marcado_como_cartao_mas_continua_protegido()
     {
-        Assert.Empty(DetectorDadosProtegidos.Mascarar("pedido 4111 1111 1111 1112").Ocorrencias);
+        var r = DetectorDadosProtegidos.Mascarar("pedido 4111 1111 1111 1112");
+
+        Assert.Equal(CategoriaDadoProtegido.Documento, Assert.Single(r.Ocorrencias).Categoria);
     }
 
     [Fact]
@@ -69,6 +81,16 @@ public sealed class DetectorDadosProtegidosTestes
         Assert.DoesNotContain(CpfValido, r.Texto, StringComparison.Ordinal);
         Assert.DoesNotContain(CnpjValido, r.Texto, StringComparison.Ordinal);
         Assert.DoesNotContain("a@b.com", r.Texto, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-23")]
+    public void Impressao_da_ocorrencia_nunca_mostra_o_valor()
+    {
+        var r = DetectorDadosProtegidos.Mascarar("cpf 529.982.247-25");
+
+        Assert.DoesNotContain("529", Assert.Single(r.Ocorrencias).ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("529", r.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]

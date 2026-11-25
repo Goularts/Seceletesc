@@ -62,7 +62,8 @@ public sealed record FonteConhecimento(
     IReadOnlySet<Classificacao> Classificacoes,
     EscopoConhecimento Escopo,
     DateTimeOffset? ValidoAte,
-    string Origem)
+    string Origem,
+    bool EhVersaoVigente = true)
 {
     public ChaveFonte Chave => new(ItemId, Versao);
 }

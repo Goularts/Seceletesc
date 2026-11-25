@@ -10,6 +10,7 @@ namespace Seceletesc.Dominio.Envio;
 public enum MotivoBloqueio
 {
     RascunhoInvalido,
+    CaracterNaoPermitido,
     EstadoMudou,
     AssuntoNaoAutorizado,
     AssuntoExigeHumano,
@@ -24,6 +25,7 @@ public enum MotivoBloqueio
     MenuOuOpcoes,
     UrlNaoPermitida,
     AvisoNaoConfigurado,
+    TempoEsgotado,
 }
 
 public sealed record ResultadoValidacao(bool Aprovado, MotivoBloqueio? Motivo, string? Detalhe)
@@ -40,22 +42,53 @@ public sealed record ContextoValidacao(
     PoliticaTenant Politica,
     IReadOnlySet<ChaveFonte> EntreguesAoModeloNestaRodada,
     IReadOnlyDictionary<ChaveFonte, FonteConhecimento> FontesCitadasNoBanco,
-    string TelefoneClienteAtual,
     DateTimeOffset Agora);
 
 /// <summary>
 /// Validador determinístico de envio (invariantes 6 a 9 e 11 a 13; plano técnico, seção 4.3).
-/// Para na primeira regra que falhar. Resposta gerada não é resposta autorizada.
+/// Para na primeira regra que falhar e falha fechado (inclusive em tempo esgotado de expressão regular).
+/// Resposta gerada não é resposta autorizada.
+/// Limite assumido: afirmações sem número, sem termo de compromisso e sem padrão proibido não são
+/// verificáveis por regra; esse risco residual é coberto pelos testes de nível Avaliação.
 /// </summary>
 public static partial class ValidadorEnvio
 {
+    private const int TimeoutMs = 1000;
+
+    private static readonly string[] NumerosPorExtenso =
+    [
+        "dois", "duas", "tres", "quatro", "cinco", "seis", "sete", "oito", "nove", "dez", "onze", "doze", "treze",
+        "quatorze", "catorze", "quinze", "dezesseis", "dezessete", "dezoito", "dezenove", "vinte", "trinta",
+        "quarenta", "cinquenta", "sessenta", "setenta", "oitenta", "noventa", "cem", "cento", "duzentos",
+        "trezentos", "quatrocentos", "quinhentos", "seiscentos", "setecentos", "oitocentos", "novecentos", "mil",
+        "milhao", "milhoes", "bilhao", "metade", "dobro", "triplo", "por cento", "meia hora",
+    ];
+
     public static ResultadoValidacao Validar(RascunhoResposta? rascunho, ContextoValidacao ctx)
     {
         ArgumentNullException.ThrowIfNull(ctx);
+        try
+        {
+            return ValidarInterno(rascunho, ctx);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return ResultadoValidacao.Bloquear(MotivoBloqueio.TempoEsgotado);
+        }
+    }
 
+    private static ResultadoValidacao ValidarInterno(RascunhoResposta? rascunho, ContextoValidacao ctx)
+    {
         if (rascunho is null)
         {
             return ResultadoValidacao.Bloquear(MotivoBloqueio.RascunhoInvalido);
+        }
+
+        // 0. Só caracteres esperados numa resposta em português (fecha homóglifos de outros alfabetos).
+        if (!Normalizacao.CaracteresPermitidos(rascunho.Texto, out var suspeito)
+            || !Normalizacao.CaracteresPermitidos(rascunho.AssuntoDeclarado, out suspeito))
+        {
+            return ResultadoValidacao.Bloquear(MotivoBloqueio.CaracterNaoPermitido, suspeito);
         }
 
         // 1. Estado e versão: um humano pode ter assumido durante a geração.
@@ -106,9 +139,8 @@ public static partial class ValidadorEnvio
 
         var texto = Normalizacao.ParaComparacao(rascunho.Texto);
         var conteudoFontes = string.Join("\n", fontes.Select(f => Normalizacao.ParaComparacao(f.Conteudo)));
-        var numerosFontes = Normalizacao.Numeros(conteudoFontes);
 
-        // 5. Padrões proibidos (antes dos valores, para dar o motivo mais específico).
+        // 5. Padrões proibidos.
         if (AutodeclaracaoHumana().IsMatch(texto))
         {
             return ResultadoValidacao.Bloquear(MotivoBloqueio.AutodeclaracaoHumana);
@@ -119,7 +151,12 @@ public static partial class ValidadorEnvio
             return ResultadoValidacao.Bloquear(MotivoBloqueio.MenuOuOpcoes);
         }
 
-        foreach (Match url in Url().Matches(texto))
+        if (UrlOfuscada().IsMatch(texto))
+        {
+            return ResultadoValidacao.Bloquear(MotivoBloqueio.UrlNaoPermitida, "url ofuscada");
+        }
+
+        foreach (Match url in Host().Matches(texto))
         {
             if (!DominioPermitido(url.Groups["host"].Value, ctx.Politica.DominiosPermitidos))
             {
@@ -127,22 +164,24 @@ public static partial class ValidadorEnvio
             }
         }
 
-        // 6. Telefones: nenhum número de telefone que não seja o do cliente atual ou conste numa fonte.
-        var telefoneCliente = Normalizacao.SomenteDigitos(ctx.TelefoneClienteAtual);
-        var telefonesFontes = Telefones(conteudoFontes);
-        foreach (var digitos in Telefones(texto))
+        // 6. Telefones: o modelo nunca recebe telefones, então nenhum telefone pode sair numa resposta automática.
+        if (Telefone().Matches(texto).Any(m => Normalizacao.SomenteDigitos(m.Value).Length is >= 10 and <= 13))
         {
-            if (!MesmoTelefone(digitos, telefoneCliente) && !telefonesFontes.Any(f => MesmoTelefone(digitos, f)))
-            {
-                return ResultadoValidacao.Bloquear(MotivoBloqueio.TelefoneNaoAutorizado);
-            }
+            return ResultadoValidacao.Bloquear(MotivoBloqueio.TelefoneNaoAutorizado);
         }
 
-        // 4. Valores: todo número do texto consta numa fonte citada. Na dúvida, bloqueia.
-        var numeroSemFonte = Normalizacao.Numeros(texto).FirstOrDefault(n => !numerosFontes.Contains(n));
-        if (numeroSemFonte is not null)
+        // 4. Valores: todo número (com sua unidade) e todo número por extenso constam numa fonte citada.
+        var valoresFontes = Valores(conteudoFontes);
+        var valorSemFonte = Valores(texto).FirstOrDefault(v => !valoresFontes.Contains(v));
+        if (valorSemFonte is not null)
         {
-            return ResultadoValidacao.Bloquear(MotivoBloqueio.ValorSemFonte, numeroSemFonte);
+            return ResultadoValidacao.Bloquear(MotivoBloqueio.ValorSemFonte, valorSemFonte);
+        }
+
+        var extensoSemFonte = NumerosPorExtenso.FirstOrDefault(n => ContemTermo(texto, n) && !ContemTermo(conteudoFontes, n));
+        if (extensoSemFonte is not null)
+        {
+            return ResultadoValidacao.Bloquear(MotivoBloqueio.ValorSemFonte, extensoSemFonte);
         }
 
         foreach (var termo in ctx.Politica.TermosCompromisso)
@@ -179,44 +218,57 @@ public static partial class ValidadorEnvio
         return ResultadoValidacao.Aprovar();
     }
 
+    /// <summary>
+    /// Valores numéricos com a unidade que os acompanha ("18|h", "18|vezes", "150,00|reais").
+    /// "18h" e "18 vezes" são valores diferentes; "150,00" e "150.000,00" também.
+    /// </summary>
+    private static HashSet<string> Valores(string textoNormalizado)
+    {
+        var valores = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Match m in Valor().Matches(textoNormalizado))
+        {
+            var numero = m.Groups["num"].Value.TrimStart('0');
+            valores.Add((numero.Length == 0 || !char.IsDigit(numero[0]) ? "0" + numero : numero) + "|" + m.Groups["unid"].Value.Trim());
+        }
+
+        return valores;
+    }
+
     private static bool EhMenu(string original, string normalizado)
     {
-        var linhasNumeradas = original.Split('\n').Count(l => ItemDeMenu().IsMatch(Normalizacao.ParaComparacao(l)));
-        return linhasNumeradas >= 2 || InstrucaoDeOpcao().IsMatch(normalizado);
+        var linhasDeItem = original.Split('\n').Count(l => ItemDeLista().IsMatch(Normalizacao.ParaComparacao(l)));
+        return linhasDeItem >= 2 || InstrucaoDeOpcao().IsMatch(normalizado);
     }
 
     private static bool DominioPermitido(string host, IReadOnlySet<string> permitidos) =>
         permitidos.Any(p =>
         {
             var d = Normalizacao.ParaComparacao(p).TrimStart('.');
-            return host == d || host.EndsWith("." + d, StringComparison.Ordinal);
+            return d.Length > 0 && (host == d || host.EndsWith("." + d, StringComparison.Ordinal));
         });
 
-    /// <summary>Sequências com cara de telefone brasileiro (10 a 13 dígitos, com ou sem separadores).</summary>
-    private static List<string> Telefones(string texto) =>
-        Telefone().Matches(texto)
-            .Select(m => Normalizacao.SomenteDigitos(m.Value))
-            .Where(d => d.Length is >= 10 and <= 13)
-            .ToList();
-
-    private static bool MesmoTelefone(string a, string b) =>
-        a.Length >= 8 && b.Length >= 8 && (a.EndsWith(b, StringComparison.Ordinal) || b.EndsWith(a, StringComparison.Ordinal));
-
     private static bool ContemTermo(string texto, string termo) =>
-        Regex.IsMatch(texto, $@"(?<![\p{{L}}\d]){Regex.Escape(termo)}(?![\p{{L}}\d])", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+        Regex.IsMatch(texto, $@"(?<![\p{{L}}\d]){Regex.Escape(termo)}(?![\p{{L}}\d])", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(TimeoutMs));
 
-    [GeneratedRegex(@"\b(sou|eu sou) (um |uma )?(humano|humana|pessoa|pessoa real|atendente humano|atendente humana|ser humano)\b|\bnao sou (um |uma )?(robo|bot|chatbot|ia|inteligencia artificial|assistente virtual|maquina|programa)\b|\b(voce esta|esta) falando com (um |uma )?(humano|humana|pessoa|pessoa real|ser humano)\b")]
+    [GeneratedRegex(@"\b(sou|eu sou) (um |uma )?(humano|humana|pessoa|pessoa real|pessoa de verdade|atendente humano|atendente humana|atendente de verdade|ser humano|gente de verdade)\b|\bnao sou (um |uma )?(robo\w*|bot\w*|chatbot|ia|inteligencia artificial|assistente virtual|maquina|programa|automatico|automatica)\b|\b(voce esta|esta) falando com (um |uma )?(humano|humana|pessoa|pessoa real|ser humano|atendente de verdade|gente de verdade)\b|\bde carne e osso\b|\bmeu nome e\b|\bme chamo\b", RegexOptions.None, TimeoutMs)]
     private static partial Regex AutodeclaracaoHumana();
 
-    [GeneratedRegex(@"^\s*(\d{1,2}|[a-e])\s*[\).:\-]\s*\S")]
-    private static partial Regex ItemDeMenu();
+    [GeneratedRegex(@"^\s*(?:(?:\d{1,2}|[a-z])\s*[\).:\-]|[\-\*\+>])\s*\S", RegexOptions.None, TimeoutMs)]
+    private static partial Regex ItemDeLista();
 
-    [GeneratedRegex(@"\b(digite|responda|escolha|selecione|tecle|envie)\s+(o\s+|a\s+)?(numero\s+|opcao\s+)?\d\b|\bopcao\s+\d\b")]
+    [GeneratedRegex(@"\b(digite|responda|escolha|selecione|tecle|envie|marque)\s+(o\s+|a\s+)?(numero\s+|opcao\s+|letra\s+)?(\d|[a-z])\b(?!\w)|\bopcao\s+(\d|[a-z])\b", RegexOptions.None, TimeoutMs)]
     private static partial Regex InstrucaoDeOpcao();
 
-    [GeneratedRegex(@"(?:https?://|www\.)?(?<host>(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|br|net|org|io|me|ly|app|info|site|online|xyz|co|biz|link|shop|store|tk|ml|gov|edu)(?:\.[a-z]{2})?)\b")]
-    private static partial Regex Url();
+    [GeneratedRegex(@"\[\s*\.\s*\]|\(\s*\.\s*\)|\bponto\s+(com|br|net|org|io|app)\b|\barroba\b", RegexOptions.None, TimeoutMs)]
+    private static partial Regex UrlOfuscada();
 
-    [GeneratedRegex(@"\+?\d[\d\s().\-]{7,}\d")]
+    [GeneratedRegex(@"(?<host>(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24})(?![a-z0-9-])", RegexOptions.None, TimeoutMs)]
+    private static partial Regex Host();
+
+    [GeneratedRegex(@"\+?[0-9][0-9\s().\-]{7,20}[0-9]", RegexOptions.None, TimeoutMs)]
     private static partial Regex Telefone();
+
+    // Unidade = letras coladas ao número ("18h", "10x") ou, após um espaço, uma unidade conhecida.
+    [GeneratedRegex(@"(?<num>[0-9]+(?:[.,:][0-9]+)*)(?<unid>%|[a-z]+|\s(?:%|reais|real|vezes|parcelas?|horas?|hrs?|h|minutos?|min|dias?|meses|mes|anos?|semanas?|km|kg|g|ml|l|m|cm|mm|unidades?|un|pessoas?|x)\b)?", RegexOptions.None, TimeoutMs)]
+    private static partial Regex Valor();
 }

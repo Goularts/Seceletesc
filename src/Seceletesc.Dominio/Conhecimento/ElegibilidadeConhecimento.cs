@@ -7,6 +7,8 @@ public enum MotivoInelegivel
 {
     OutroTenant,
     NaoAprovado,
+    VersaoNaoVigente,
+    SemValidade,
     Expirado,
     ForaDoEscopo,
     ClassificacaoNaoPermitida,
@@ -36,6 +38,17 @@ public static class ElegibilidadeConhecimento
             return MotivoInelegivel.NaoAprovado;
         }
 
+        if (!fonte.EhVersaoVigente)
+        {
+            return MotivoInelegivel.VersaoNaoVigente;
+        }
+
+        // Só PUB pode ter validade indefinida (governanca-conhecimento.md, seção 3; CTX-006).
+        if (fonte.ValidoAte is null && !(fonte.Classificacoes.Count > 0 && fonte.Classificacoes.All(c => c == Classificacao.Publico)))
+        {
+            return MotivoInelegivel.SemValidade;
+        }
+
         if (fonte.ValidoAte is { } validoAte && validoAte <= agora)
         {
             return MotivoInelegivel.Expirado;
@@ -60,9 +73,20 @@ public static class ElegibilidadeConhecimento
             return MotivoInelegivel.ClassificacaoNaoPermitida;
         }
 
-        if (fonte.Classificacoes.Contains(Classificacao.Cliente) && !politica.EnviarConhecimentoClienteAoModelo)
+        if (fonte.Classificacoes.Contains(Classificacao.Cliente))
         {
-            return MotivoInelegivel.ConhecimentoDeClienteMinimizado;
+            if (!politica.EnviarConhecimentoClienteAoModelo)
+            {
+                return MotivoInelegivel.ConhecimentoDeClienteMinimizado;
+            }
+
+            // Informação de cliente só vale para aquele cliente ou aquele atendimento, nunca para a empresa toda.
+            var doProprioCliente = (fonte.Escopo.Tipo == TipoEscopo.Cliente && fonte.Escopo.ReferenciaId == conversa.ClienteId)
+                || (fonte.Escopo.Tipo == TipoEscopo.Atendimento && fonte.Escopo.ReferenciaId == conversa.Id);
+            if (!doProprioCliente)
+            {
+                return MotivoInelegivel.ForaDoEscopo;
+            }
         }
 
         return null;

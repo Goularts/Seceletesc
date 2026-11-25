@@ -62,5 +62,7 @@ Não presumir. Decisões puramente técnicas (estrutura da solução, estratégi
 - Mensagens que não são texto (mídia, áudio, reação, edição): a IA trata? (Padrão no plano: vão para supervisão.)
 - Esclarecimento: em quais assuntos é permitido e como é gerado? (Padrão no plano: desligado.)
 - Cliente identificado pelo telefone: como tratar número compartilhado ou reciclado?
+- Escopo "proposta": como uma proposta se liga a uma conversa? Até decidir, conhecimento com escopo de proposta não é usado pela IA.
+- Termos de compromisso: validar a lista padrão (PoliticaTenant.TermosCompromissoPadrao) antes do piloto. Ela só restringe.
 - Categorias de dados protegidos (criptografados e ocultos da IA). Padrão técnico inicial: CPF, CNPJ, RG, cartão de pagamento, e-mail, CEP/endereço. O Victor pode ampliar.
 - Quem pode ver dados protegidos no painel.

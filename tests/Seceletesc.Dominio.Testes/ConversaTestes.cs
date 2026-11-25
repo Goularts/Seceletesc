@@ -52,7 +52,6 @@ public sealed class ConversaTestes
     }
 
     [Fact]
-    [Trait("Regra", "INV-7")]
     public void Transferencia_so_e_iniciada_a_partir_do_modo_automatico()
     {
         var c = NovaConversa();
@@ -75,7 +74,6 @@ public sealed class ConversaTestes
     }
 
     [Fact]
-    [Trait("Regra", "INV-24")]
     public void Janela_de_24h_conta_a_partir_da_ultima_mensagem_do_cliente()
     {
         var c = NovaConversa();
@@ -85,5 +83,16 @@ public sealed class ConversaTestes
         Assert.True(c.DentroDaJanela24h(Agora));
 
         Assert.False(c.DentroDaJanela24h(Agora.AddHours(2)));
+    }
+
+    [Fact]
+    public void Marcacao_de_retomada_humana_nao_e_apagada_por_nova_mensagem_do_cliente()
+    {
+        var c = NovaConversa();
+        c.MarcarRetomadaHumana();
+
+        c.RegistrarMensagemDoCliente(Agora);
+
+        Assert.True(c.MarcadaRetomadaHumana);
     }
 }

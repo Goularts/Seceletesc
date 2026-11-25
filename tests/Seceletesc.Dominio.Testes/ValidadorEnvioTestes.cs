@@ -103,7 +103,7 @@ public sealed class ValidadorEnvioTestes
 
     [Fact]
     [Trait("Regra", "ADV-03")]
-    [Trait("Regra", "CTX-002")]
+    [Trait("Regra", "CTX-003")]
     public void Horario_sem_disponibilidade_confirmada_e_bloqueado()
     {
         var r = ValidadorEnvio.Validar(Rascunho("Temos horário às 14h30.", "horario", Horario), Contexto(NovaConversa(), Politica(), Horario));
@@ -132,8 +132,7 @@ public sealed class ValidadorEnvioTestes
     }
 
     [Fact]
-    [Trait("Regra", "ADV-15")]
-    [Trait("Regra", "CTX-002")]
+    [Trait("Regra", "CTX-003")]
     public void Fonte_valida_mas_sem_relacao_com_o_texto_nao_sustenta_valores()
     {
         var r = ValidadorEnvio.Validar(Rascunho("O procedimento custa R$ 300.", "horario", Horario), Contexto(NovaConversa(), Politica(), Horario));
@@ -258,6 +257,16 @@ public sealed class ValidadorEnvioTestes
         Assert.Equal(MotivoBloqueio.TelefoneNaoAutorizado, r.Motivo);
     }
 
+    [Fact]
+    [Trait("Regra", "CTX-007")]
+    public void Nenhum_telefone_sai_em_resposta_automatica_nem_o_que_consta_numa_fonte()
+    {
+        var fonte = Fonte("horario", "Ligue (11) 3333-4444 de segunda a sexta.");
+        var r = ValidadorEnvio.Validar(Rascunho("Ligue (11) 3333-4444 de segunda a sexta.", "horario", fonte), Contexto(NovaConversa(), Politica(), fonte));
+
+        Assert.Equal(MotivoBloqueio.TelefoneNaoAutorizado, r.Motivo);
+    }
+
     [Theory]
     [Trait("Regra", "ADV-13")]
     [Trait("Regra", "CTX-015")]
@@ -266,7 +275,6 @@ public sealed class ValidadorEnvioTestes
     [InlineData("Não sou um robô, fique tranquilo.")]
     [InlineData("Você está falando com um humano.")]
     [InlineData("ｓｏｕ ｈｕｍａｎｏ")] // largura total (homóglifo de compatibilidade)
-    [InlineData("sou hu​mano")]   // caractere de largura zero
     public void Autodeclaracao_como_humano_e_bloqueada(string texto)
     {
         var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", Horario), Contexto(NovaConversa(), Politica(), Horario));
@@ -303,7 +311,7 @@ public sealed class ValidadorEnvioTestes
     }
 
     [Fact]
-    [Trait("Regra", "ADV-18")]
+    [Trait("Regra", "INV-6")]
     public void Sem_texto_de_aviso_configurado_nenhum_aviso_sai()
     {
         var conversa = NovaConversa();
@@ -312,5 +320,112 @@ public sealed class ValidadorEnvioTestes
         var r = ValidadorEnvio.ValidarAvisoTransferencia(conversa, transicao.NovaVersao, Politica(p => p.Aviso = ""));
 
         Assert.Equal(MotivoBloqueio.AvisoNaoConfigurado, r.Motivo);
+    }
+
+    // ---- Achados da revisão de segurança da F1a ----
+
+    [Theory]
+    [Trait("Regra", "ADV-13")]
+    [Trait("Regra", "CTX-016")]
+    [InlineData("s\u043Eu humano")]          // o cirílico
+    [InlineData("est\u0430 g\u0430rantido")] // a cirílico
+    [InlineData("sou hu\u2066mano")]         // isolamento bidi
+    [InlineData("sou hu\U000E0041mano")]     // caractere de tag
+    [InlineData("linha um\u2028linha dois")] // separador de linha Unicode
+    [InlineData("sou hu\u200Bmano")]         // largura zero
+    [InlineData("garant\u0131do")]           // i sem pingo (Latin Extended-A)
+    public void Caracteres_fora_do_portugues_tornam_a_resposta_suspeita(string texto)
+    {
+        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", Horario), Contexto(NovaConversa(), Politica(), Horario));
+
+        Assert.Equal(MotivoBloqueio.CaracterNaoPermitido, r.Motivo);
+    }
+
+    [Theory]
+    [Trait("Regra", "ADV-02")]
+    [Trait("Regra", "CTX-003")]
+    [InlineData("A consulta custa R$ 150.000,00.")]  // números soltos (150 e 0) estão na fonte
+    [InlineData("A consulta custa R$ 150.")]          // valor diferente do que está na fonte
+    [InlineData("A consulta custa cento e vinte reais.")]
+    [InlineData("A consulta sai dez por cento mais barata.")]
+    public void Valores_recombinados_ou_por_extenso_sem_fonte_sao_bloqueados(string texto)
+    {
+        var r = ValidadorEnvio.Validar(Rascunho(texto, "precos", Precos), Contexto(NovaConversa(), Politica(), Precos));
+
+        Assert.Equal(MotivoBloqueio.ValorSemFonte, r.Motivo);
+    }
+
+    [Fact]
+    [Trait("Regra", "ADV-03")]
+    [Trait("Regra", "CTX-003")]
+    public void Mesmo_numero_com_outra_unidade_nao_e_sustentado_pela_fonte()
+    {
+        var r = ValidadorEnvio.Validar(Rascunho("Parcelamos em 18 vezes.", "horario", Horario), Contexto(NovaConversa(), Politica(), Horario));
+
+        Assert.Equal(MotivoBloqueio.ValorSemFonte, r.Motivo);
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-8")]
+    public void Valor_identico_ao_da_fonte_seguido_de_texto_comum_e_aprovado()
+    {
+        var r = ValidadorEnvio.Validar(Rascunho("A consulta custa R$ 150,00 e pode ser paga no local.", "precos", Precos), Contexto(NovaConversa(), Politica(), Precos));
+
+        Assert.True(r.Aprovado, r.Motivo + " " + r.Detalhe);
+    }
+
+    [Theory]
+    [Trait("Regra", "ADV-12")]
+    [Trait("Regra", "CTX-009")]
+    [InlineData("Está assegurado.")]
+    [InlineData("Pode vir que é de graça.")]
+    [InlineData("Você está isento da taxa.")]
+    [InlineData("Te atendemos semana que vem.")]
+    [InlineData("Fazemos o reembolso integral.")]
+    public void Compromissos_por_sinonimo_sem_fonte_sao_bloqueados(string texto)
+    {
+        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", Horario), Contexto(NovaConversa(), Politica(), Horario));
+
+        Assert.Equal(MotivoBloqueio.CompromissoSemFonte, r.Motivo);
+    }
+
+    [Theory]
+    [Trait("Regra", "ADV-13")]
+    [Trait("Regra", "CTX-015")]
+    [InlineData("Sou de carne e osso, pode confiar.")]
+    [InlineData("Não sou robozinho, viu?")]
+    [InlineData("Olá! Meu nome é Ana.")]
+    public void Autodeclaracao_humana_disfarcada_e_bloqueada(string texto)
+    {
+        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", Horario), Contexto(NovaConversa(), Politica(), Horario));
+
+        Assert.Equal(MotivoBloqueio.AutodeclaracaoHumana, r.Motivo);
+    }
+
+    [Theory]
+    [Trait("Regra", "ADV-17")]
+    [InlineData("Pague em https://empresa.com.br.golpe.top/pix")] // sufixo enganoso do domínio permitido
+    [InlineData("Veja em golpe.top")]
+    [InlineData("Veja em golpe.click")]
+    [InlineData("Acesse golpe[.]com")]
+    [InlineData("Acesse golpe ponto com")]
+    public void Urls_disfarcadas_ou_com_dominio_enganoso_sao_bloqueadas(string texto)
+    {
+        var politica = Politica(p => p.Dominios.Add("empresa.com.br"));
+        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", Horario), Contexto(NovaConversa(), politica, Horario));
+
+        Assert.Equal(MotivoBloqueio.UrlNaoPermitida, r.Motivo);
+    }
+
+    [Theory]
+    [Trait("Regra", "INV-1")]
+    [InlineData("Temos:\n- horários\n- preços")]
+    [InlineData("Escolha:\nf) horários\ng) preços")]
+    [InlineData("Marque a letra b.")]
+    public void Listas_com_marcadores_ou_letras_sao_menu(string texto)
+    {
+        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", Horario), Contexto(NovaConversa(), Politica(), Horario));
+
+        Assert.Equal(MotivoBloqueio.MenuOuOpcoes, r.Motivo);
     }
 }

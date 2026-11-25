@@ -20,7 +20,6 @@ public sealed class LeitorRascunhoTestes
 
     [Theory]
     [Trait("Regra", "INV-14")]
-    [Trait("Regra", "ADV-06")]
     [InlineData("")]
     [InlineData("não é json")]
     [InlineData("[]")]

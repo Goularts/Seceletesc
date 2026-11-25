@@ -75,8 +75,6 @@ public sealed class Conversa
         {
             UltimaMensagemClienteEm = recebidaEm;
         }
-
-        MarcadaRetomadaHumana = false;
     }
 
     /// <summary>Automação interrompida (bloqueio, impasse, assunto que exige humano).</summary>

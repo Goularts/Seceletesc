@@ -12,40 +12,54 @@ public enum CategoriaDadoProtegido
     Cartao,
     Email,
     Cep,
+    ChavePix,
+
+    /// <summary>Sequência longa de dígitos não identificada (ex.: cartão SUS, protocolo com documento).</summary>
+    Documento,
 }
 
-/// <summary>Dado protegido encontrado no texto original: posição, categoria e valor.</summary>
-public sealed record OcorrenciaDadoProtegido(CategoriaDadoProtegido Categoria, int Inicio, int Tamanho, string Valor);
+/// <summary>Dado protegido encontrado no texto limpo: posição, categoria e valor original.</summary>
+public sealed record OcorrenciaDadoProtegido(CategoriaDadoProtegido Categoria, int Inicio, int Tamanho, string Valor)
+{
+    /// <summary>Nunca imprime o valor: um log acidental não pode vazar o dado.</summary>
+    public override string ToString() => $"OcorrenciaDadoProtegido {{ Categoria = {Categoria}, Inicio = {Inicio}, Tamanho = {Tamanho}, Valor = *** }}";
+}
 
 /// <summary>Texto sem os dados protegidos (com marcadores) e os valores originais retirados.</summary>
-public sealed record TextoMascarado(string Texto, IReadOnlyList<OcorrenciaDadoProtegido> Ocorrencias);
+public sealed record TextoMascarado(string Texto, IReadOnlyList<OcorrenciaDadoProtegido> Ocorrencias)
+{
+    public override string ToString() => $"TextoMascarado {{ Texto = {Texto}, Ocorrencias = {Ocorrencias.Count} }}";
+}
 
 /// <summary>
 /// Detecta dados pessoais sensíveis na mensagem do cliente (invariante 23; plano técnico, seção 4.2).
 /// O valor original é criptografado pela infraestrutura; o que segue no pipeline e vai ao modelo
 /// tem só o marcador <c>[DADO PROTEGIDO:CATEGORIA]</c>.
-/// Limite conhecido: o que não casar com um padrão segue como texto. Endereço é detectado só pelo CEP.
+/// Limites conhecidos: o que não casar com um padrão segue como texto. Endereço só pelo CEP; CNH e PIS
+/// sem formatação só se coincidirem com CPF válido; 11 dígitos inválidos como CPF são tratados como telefone.
 /// </summary>
 public static partial class DetectorDadosProtegidos
 {
+    private const int TimeoutMs = 1000;
+
     public static TextoMascarado Mascarar(string texto)
     {
         ArgumentNullException.ThrowIfNull(texto);
 
-        // Trabalha sobre o texto em NFKC, sem invisíveis, para que dígitos de largura total ou
-        // caracteres de largura zero não escondam um CPF do detector.
-        var limpo = InvisiveisRegex().Replace(texto.Normalize(NormalizationForm.FormKC), string.Empty);
+        // NFKC, sem caracteres de formatação, dígitos de qualquer alfabeto em ASCII e travessões como hífen:
+        // truques de Unicode não escondem o dado.
+        var limpo = Normalizacao.LimparPreservandoTexto(texto);
 
         var ocorrencias = new List<OcorrenciaDadoProtegido>();
         Coletar(ocorrencias, limpo, EmailRegex(), CategoriaDadoProtegido.Email, _ => true);
+        Coletar(ocorrencias, limpo, EmailPorExtensoRegex(), CategoriaDadoProtegido.Email, _ => true);
+        Coletar(ocorrencias, limpo, UuidRegex(), CategoriaDadoProtegido.ChavePix, _ => true);
         Coletar(ocorrencias, limpo, CartaoRegex(), CategoriaDadoProtegido.Cartao, v => LuhnValido(Normalizacao.SomenteDigitos(v)));
-        Coletar(ocorrencias, limpo, CnpjFormatadoRegex(), CategoriaDadoProtegido.Cnpj, _ => true);
-        Coletar(ocorrencias, limpo, CpfFormatadoRegex(), CategoriaDadoProtegido.Cpf, _ => true);
-        Coletar(ocorrencias, limpo, RgFormatadoRegex(), CategoriaDadoProtegido.Rg, _ => true);
+        Coletar(ocorrencias, limpo, CnpjRegex(), CategoriaDadoProtegido.Cnpj, v => Formatado(v, '/') || CnpjValido(v));
+        Coletar(ocorrencias, limpo, CpfRegex(), CategoriaDadoProtegido.Cpf, v => (v.Contains('.', StringComparison.Ordinal) && v.Contains('-', StringComparison.Ordinal)) || CpfValido(v));
+        Coletar(ocorrencias, limpo, RgRegex(), CategoriaDadoProtegido.Rg, _ => true);
         Coletar(ocorrencias, limpo, CepRegex(), CategoriaDadoProtegido.Cep, _ => true);
-        // Sem formatação: só com dígitos verificadores válidos (11 dígitos também podem ser telefone).
-        Coletar(ocorrencias, limpo, Digitos14Regex(), CategoriaDadoProtegido.Cnpj, v => CnpjValido(v));
-        Coletar(ocorrencias, limpo, Digitos11Regex(), CategoriaDadoProtegido.Cpf, v => CpfValido(v));
+        Coletar(ocorrencias, limpo, DigitosLongosRegex(), CategoriaDadoProtegido.Documento, v => Normalizacao.SomenteDigitos(v).Length >= 14);
 
         var ordenadas = ocorrencias.OrderBy(o => o.Inicio).ToList();
         var sb = new StringBuilder(limpo.Length);
@@ -60,6 +74,8 @@ public static partial class DetectorDadosProtegidos
         sb.Append(limpo, cursor, limpo.Length - cursor);
         return new TextoMascarado(sb.ToString(), ordenadas);
     }
+
+    private static bool Formatado(string valor, char separador) => valor.Contains(separador, StringComparison.Ordinal);
 
     private static void Coletar(List<OcorrenciaDadoProtegido> destino, string texto, Regex regex, CategoriaDadoProtegido categoria, Func<string, bool> confirma)
     {
@@ -149,30 +165,30 @@ public static partial class DetectorDadosProtegidos
         return soma % 10 == 0;
     }
 
-    [GeneratedRegex("[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]")]
-    private static partial Regex InvisiveisRegex();
-
-    [GeneratedRegex(@"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")]
+    [GeneratedRegex(@"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", RegexOptions.None, TimeoutMs)]
     private static partial Regex EmailRegex();
 
-    [GeneratedRegex(@"(?<!\d)(?:\d[ \-]?){12,18}\d(?!\d)")]
+    [GeneratedRegex(@"[A-Za-z0-9._\-]+\s+(?i:arroba)\s+[A-Za-z0-9\-]+(?:\s+(?i:ponto)\s+[A-Za-z]{2,})+", RegexOptions.None, TimeoutMs)]
+    private static partial Regex EmailPorExtensoRegex();
+
+    [GeneratedRegex(@"(?<![0-9A-Fa-f])[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}(?![0-9A-Fa-f])", RegexOptions.None, TimeoutMs)]
+    private static partial Regex UuidRegex();
+
+    [GeneratedRegex(@"(?<![0-9])(?:[0-9][ .\-]?){12,18}[0-9](?![0-9])", RegexOptions.None, TimeoutMs)]
     private static partial Regex CartaoRegex();
 
-    [GeneratedRegex(@"(?<!\d)\d{2}\.?\d{3}\.?\d{3}/\d{4}-?\d{2}(?!\d)")]
-    private static partial Regex CnpjFormatadoRegex();
+    [GeneratedRegex(@"(?<![0-9])[0-9]{2}[.\s]?[0-9]{3}[.\s]?[0-9]{3}[/\s]?[0-9]{4}[\-\s]?[0-9]{2}(?![0-9])", RegexOptions.None, TimeoutMs)]
+    private static partial Regex CnpjRegex();
 
-    [GeneratedRegex(@"(?<!\d)\d{3}\.\d{3}\.\d{3}-?\d{2}(?!\d)|(?<!\d)\d{9}-\d{2}(?!\d)")]
-    private static partial Regex CpfFormatadoRegex();
+    [GeneratedRegex(@"(?<![0-9])[0-9]{3}[.\s]?[0-9]{3}[.\s]?[0-9]{3}[\-.\s]?[0-9]{2}(?![0-9])", RegexOptions.None, TimeoutMs)]
+    private static partial Regex CpfRegex();
 
-    [GeneratedRegex(@"(?<!\d)\d{1,2}\.\d{3}\.\d{3}-[\dXx](?!\d)")]
-    private static partial Regex RgFormatadoRegex();
+    [GeneratedRegex(@"(?<![0-9])[0-9]{1,2}\.?[0-9]{3}\.?[0-9]{3}-[0-9Xx](?![0-9])", RegexOptions.None, TimeoutMs)]
+    private static partial Regex RgRegex();
 
-    [GeneratedRegex(@"(?<!\d)\d{5}-\d{3}(?!\d)|(?i:\bcep\b)\s*:?\s*\d{8}(?!\d)")]
+    [GeneratedRegex(@"(?<![0-9])[0-9]{2}\.?[0-9]{3}-[0-9]{3}(?![0-9])|(?i:\bcep\b)\s*:?\s*[0-9]{5}-?[0-9]{3}(?![0-9])", RegexOptions.None, TimeoutMs)]
     private static partial Regex CepRegex();
 
-    [GeneratedRegex(@"(?<!\d)\d{14}(?!\d)")]
-    private static partial Regex Digitos14Regex();
-
-    [GeneratedRegex(@"(?<!\d)\d{11}(?!\d)")]
-    private static partial Regex Digitos11Regex();
+    [GeneratedRegex(@"(?<![0-9])(?:[0-9][ .\-/]?){13,29}[0-9](?![0-9])", RegexOptions.None, TimeoutMs)]
+    private static partial Regex DigitosLongosRegex();
 }
