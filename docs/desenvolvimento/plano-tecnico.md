@@ -96,7 +96,7 @@ tests/
 
 O modelo só vê o que pode aparecer numa resposta automática. Assim, o validador não precisa "pegar" vazamento de conteúdo que nunca foi entregue ao modelo.
 
-- Histórico: só **desta** conversa.
+- Histórico: só **desta** conversa, as 20 mensagens mais recentes (parâmetro técnico; revisar na F5).
 - Conhecimento: só itens **aprovados**, **vigentes**, com escopo desta empresa/cliente/proposta/atendimento **e** classificação permitida para resposta automática pela política vigente. INT, NEG, EXC e RES ficam fora por padrão.
 - **Dados protegidos** (F1): na entrada, um detector identifica dados sensíveis (CPF, CNPJ, RG, cartão com verificação Luhn, e-mail, CEP/endereço; lista configurável). O valor original é gravado **criptografado** (AES-GCM, chave fora do banco: user-secrets em dev, cofre de chaves em produção) e o texto que segue no pipeline e vai ao modelo contém só um marcador (`[DADO PROTEGIDO:CPF]`). O papel `app` não tem a chave de leitura; só a API de supervisão, para usuário com permissão. Limite: o que o detector não reconhecer segue como texto. O conjunto de testes de detecção cresce com casos reais.
 - Telefone e identificadores do cliente não vão ao modelo (minimização).
@@ -128,12 +128,14 @@ Limite assumido: pertinência fina e tom são julgamento do modelo. Esse risco �
 
 ### 4.4 Outbox, worker e gateway (invariantes 5 e 6, CTX-010/011)
 
-- **Restrição no banco:** toda mensagem automática no outbox referencia (FK obrigatória) uma decisão `aprovada` com a mesma versão do estado, verificada por trigger. Mensagens humanas referenciam a ação humana registrada. Código que pular o validador não consegue gravar.
+- **Restrição no banco:** toda mensagem automática no outbox referencia uma decisão `aprovada` da mesma conversa, com a mesma versão do estado, para o mesmo texto (hash) e com tipo compatível com o estado (resposta só em Automatico; aviso só em TransferenciaPendente), verificada por trigger. O banco não prova que o validador rodou, porque ele é código da aplicação; prova que só entra na fila o que tem decisão aprovada e auditável.
+- **Máquina de estados no banco:** fora da supervisão humana, a única transição permitida é Automatico → TransferenciaPendente; assumir e liberar são exclusivos do papel de supervisão. Tenant e cliente da conversa são imutáveis.
+- **Supervisão acionada pelo worker:** ao cancelar uma resposta, em falha definitiva ou em envio incerto, o worker interrompe a automação (função mínima `transferir_para_supervisao`).
 - **Worker**, para cada mensagem, numa transação:
   - `FOR UPDATE` na conversa, a mesma trava da tomada de controle humana;
   - revalida estado e versão, status e validade das fontes citadas, janela de 24h e prazo de validade (TTL) da mensagem;
   - qualquer falha cancela a mensagem e registra o motivo; mensagem automática vencida nunca é enviada.
-- **Sem envio duplicado:** a mensagem passa a `enviando` com lease antes da chamada HTTP. Resultado ambíguo (timeout) vira `incerto` e **não** é repetido automaticamente; a supervisão é avisada. Preferimos o risco de não enviar ao de enviar duas vezes.
+- **Sem envio duplicado:** a mensagem passa a `enviando` com lease (60 s) antes da chamada HTTP, que tem limite de 30 s. Resultado ambíguo (timeout) vira `incerto` e **não** é repetido automaticamente; a supervisão é avisada. Preferimos o risco de não enviar ao de enviar duas vezes.
 - **Gateway:** único componente com a credencial de envio (teste de arquitetura). Rejeita mensagem interativa, template com botões e texto livre fora da janela de 24h.
 
 ### 4.5 Isolamento entre empresas e clientes (invariante 10)
@@ -232,6 +234,7 @@ F0 a F3 não dependem de decisão pendente nem de infraestrutura externa. Todas 
 
 | Fase | Situação |
 |---|---|
+| F1b Pipeline | implementada: orquestrador, worker, criptografia, travas do banco. Revisão em revisoes/2026-11-25-f1b.md |
 | F1a Domínio | implementada: estados, validador, elegibilidade, rascunho estrito, dados protegidos. Revisão em revisoes/2026-11-25-f1a.md |
 | F0 Fundação | implementada (PR #2): papéis sem superusuário, RLS forçado com `SET LOCAL`, histórico append-only com carimbo do banco, migrador com checksum, CI endurecido, contagem de testes por regra |
 
@@ -248,6 +251,7 @@ F0 a F3 não dependem de decisão pendente nem de infraestrutura externa. Todas 
 | O dono das tabelas consegue desligar triggers ou políticas (é o dono) | a aplicação nunca usa o dono; credencial do dono só no pipeline de migração; mudanças no banco só por migração revisada pelo CI |
 | Qualquer papel pode definir `app.tenant_id` na própria transação | só a infraestrutura define o tenant (`ExecutorTenant`/`UnidadeDeTrabalhoTenant`); nenhum SQL vindo de entrada externa é executado; consultas sempre parametrizadas |
 | O papel `app` pode descobrir qual tenant usa um `phone_number_id` testando valores | só serve a quem já recebe o webhook; aceito como risco baixo |
+| A aplicação comprometida pode gravar uma decisão aprovada sem rodar o validador | decisões imutáveis e auditáveis, com hash do texto; o trigger exige estado e versão atuais; revisão de código e mutação no validador |
 
 ## 7. Pendências que afetam o plano
 

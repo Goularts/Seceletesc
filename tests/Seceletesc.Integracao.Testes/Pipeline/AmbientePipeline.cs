@@ -1,0 +1,246 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using Npgsql;
+using NpgsqlTypes;
+using Seceletesc.Aplicacao.Envio;
+using Seceletesc.Dominio.Conhecimento;
+using Seceletesc.Dominio.Contratos;
+using Seceletesc.Dominio.Politicas;
+using Seceletesc.Infraestrutura.Criptografia;
+using Seceletesc.Infraestrutura.Nucleo;
+
+namespace Seceletesc.Integracao.Testes.Pipeline;
+
+/// <summary>Relógio controlado pelo teste.</summary>
+internal sealed class RelogioFalso(DateTimeOffset inicio) : TimeProvider
+{
+    public DateTimeOffset Agora { get; set; } = inicio;
+
+    public override DateTimeOffset GetUtcNow() => Agora;
+}
+
+/// <summary>Motor de IA simulado: devolve o que o teste mandar e guarda cada contexto recebido.</summary>
+internal sealed class MotorFalso(Func<ContextoModelo, Task<string>> responder) : IMotorIA
+{
+    public List<ContextoModelo> Contextos { get; } = [];
+
+    public async Task<string> GerarRascunhoAsync(ContextoModelo contexto, CancellationToken ct)
+    {
+        Contextos.Add(contexto);
+        return await responder(contexto).ConfigureAwait(false);
+    }
+
+    /// <summary>Rascunho citando todos os conhecimentos do assunto recebidos no contexto.</summary>
+    public static string Rascunho(ContextoModelo ctx, string texto, string assunto) =>
+        JsonSerializer.Serialize(new
+        {
+            texto,
+            fontes = ctx.Conhecimentos.Where(k => k.Assunto == assunto).Select(k => new { item = k.ItemId, versao = k.Versao }),
+            assunto,
+        });
+}
+
+/// <summary>Gateway simulado: registra o que foi enviado e devolve os resultados configurados.</summary>
+internal sealed class GatewayFalso : IGatewayWhatsApp
+{
+    public Queue<Func<ResultadoEnvio>> Respostas { get; } = new();
+
+    public List<(string WaId, string Texto)> Enviadas { get; } = [];
+
+    public Task<ResultadoEnvio> EnviarTextoAsync(string waIdDestino, string texto, CancellationToken ct)
+    {
+        var r = Respostas.Count > 0 ? Respostas.Dequeue()() : new ResultadoEnvio(SituacaoEnvio.Enviada, "wamid.saida." + Guid.NewGuid(), null);
+        if (r.Situacao is SituacaoEnvio.Enviada or SituacaoEnvio.Incerta)
+        {
+            Enviadas.Add((waIdDestino, texto));
+        }
+
+        return Task.FromResult(r);
+    }
+}
+
+/// <summary>
+/// Monta um tenant isolado por teste, com política e conhecimento semeados pelo administrador
+/// (como faria a supervisão humana), e expõe o orquestrador e o worker com os papéis reais da aplicação.
+/// </summary>
+internal sealed class AmbientePipeline : IAsyncDisposable
+{
+    public static readonly DateTimeOffset Inicio = new(2026, 11, 25, 12, 0, 0, TimeSpan.Zero);
+    public const string WaCliente = "5511988887777";
+
+    private static readonly Lazy<(string Publica, string Privada)> ChavesRsa = new(() =>
+    {
+        using var rsa = RSA.Create(3072);
+        return (rsa.ExportSubjectPublicKeyInfoPem(), rsa.ExportPkcs8PrivateKeyPem());
+    });
+
+    private readonly BancoFixture _banco;
+    private readonly CifradorDadosProtegidos _cifrador;
+
+    private AmbientePipeline(BancoFixture banco, Guid tenantId)
+    {
+        _banco = banco;
+        TenantId = tenantId;
+        _cifrador = new CifradorDadosProtegidos(ChavesRsa.Value.Publica);
+        App = banco.CriarDataSource("app_teste", maxPool: 4);
+        WorkerDs = banco.CriarDataSource("worker_teste", maxPool: 4);
+    }
+
+    public Guid TenantId { get; }
+
+    public RelogioFalso Relogio { get; } = new(Inicio);
+
+    public GatewayFalso Gateway { get; } = new();
+
+    public NpgsqlDataSource App { get; }
+
+    public NpgsqlDataSource WorkerDs { get; }
+
+    public static string ChavePrivadaPem => ChavesRsa.Value.Privada;
+
+    public static async Task<AmbientePipeline> CriarAsync(BancoFixture banco, Action<PoliticaTenantBuilder>? ajustePolitica = null)
+    {
+        var tenantId = Guid.NewGuid();
+        var b = new PoliticaTenantBuilder();
+        ajustePolitica?.Invoke(b);
+        var politica = new PoliticaTenant
+        {
+            TenantId = tenantId,
+            Versao = 1,
+            AssuntosAutonomos = b.Autonomos,
+            AssuntosExigemHumano = b.ExigemHumano,
+            ClassificacoesPermitidasRespostaAutomatica = b.Classificacoes,
+            TextoAvisoTransferencia = b.Aviso,
+        };
+
+        await using var c = new NpgsqlConnection(banco.ConnectionStringAdmin);
+        await c.OpenAsync();
+        // A fila de envio é global (o worker atende todas as empresas). Para isolar os testes,
+        // itens deixados por testes anteriores ficam indisponíveis.
+        await using (var cmd = new NpgsqlCommand("""
+            update fila_envio set disponivel_em = now() + interval '100 years';
+            insert into tenants (id, nome) values (@t, 'Empresa de teste');
+            """, c))
+        {
+            cmd.Parameters.AddWithValue("t", tenantId);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        if (!b.SemPolitica)
+        {
+            await using var pol = new NpgsqlCommand("insert into politicas_tenant (tenant_id, versao, conteudo) values (@t, 1, @c::jsonb)", c);
+            pol.Parameters.AddWithValue("t", tenantId);
+            pol.Parameters.AddWithValue("c", PoliticaJson.Serializar(politica));
+            await pol.ExecuteNonQueryAsync();
+        }
+
+        return new AmbientePipeline(banco, tenantId);
+    }
+
+    public ProcessadorMensagemRecebida Orquestrador(IMotorIA motor) => new(App, motor, _cifrador, Relogio);
+
+    public ProcessadorEnvio Worker() => new(WorkerDs, Gateway, Relogio);
+
+    public MensagemRecebida Mensagem(string texto, string? wamid = null, DateTimeOffset? em = null) =>
+        new(TenantId, WaCliente, texto, wamid ?? "wamid.entrada." + Guid.NewGuid(), em ?? Relogio.Agora);
+
+    /// <summary>Semeia conhecimento como a supervisão humana faria (administrador passa pelos gatilhos de status).</summary>
+    public async Task<ChaveFonte> ConhecimentoAsync(
+        string assunto, string conteudo, Classificacao[]? classificacoes = null, TipoEscopo escopo = TipoEscopo.Empresa,
+        Guid? escopoRef = null, DateTimeOffset? validoAte = null, string status = "Aprovado", Guid? tenant = null)
+    {
+        var itemId = Guid.NewGuid();
+        var t = tenant ?? TenantId;
+        await using var c = new NpgsqlConnection(_banco.ConnectionStringAdmin);
+        await c.OpenAsync();
+        await using var cmd = new NpgsqlCommand("""
+            insert into itens_conhecimento (id, tenant_id, assunto, status, versao_vigente) values (@i, @t, @a, @s, 1);
+            insert into versoes_conhecimento (item_id, versao, tenant_id, conteudo, classificacoes, escopo_tipo, escopo_ref, valido_ate, origem)
+            values (@i, 1, @t, @c, @cl, @e, @er, @v, 'teste');
+            """, c);
+        cmd.Parameters.AddWithValue("i", itemId);
+        cmd.Parameters.AddWithValue("t", t);
+        cmd.Parameters.AddWithValue("a", assunto);
+        cmd.Parameters.AddWithValue("s", status);
+        cmd.Parameters.AddWithValue("c", conteudo);
+        cmd.Parameters.Add(new NpgsqlParameter("cl", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = (classificacoes ?? [Classificacao.Publico]).Select(x => x.ToString()).ToArray() });
+        cmd.Parameters.AddWithValue("e", escopo.ToString());
+        cmd.Parameters.AddWithValue("er", (object?)escopoRef ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("v", (object?)validoAte ?? DBNull.Value);
+        await cmd.ExecuteNonQueryAsync();
+        return new ChaveFonte(itemId, 1);
+    }
+
+    public Task RevogarAsync(ChaveFonte fonte) =>
+        AdminAsync("update itens_conhecimento set status = 'Revogado' where id = @x", fonte.ItemId);
+
+    /// <summary>Humano assume a conversa: mesma trava e incremento de versão que a API de supervisão usará (F2).</summary>
+    public async Task AssumirAsync()
+    {
+        await using var c = new NpgsqlConnection(_banco.ConnectionStringAdmin);
+        await c.OpenAsync();
+        await using var cmd = new NpgsqlCommand("""
+            update conversas set estado = 'Humano', versao_estado = versao_estado + 1
+             where tenant_id = @t and cliente_id = (select id from clientes where tenant_id = @t and wa_id = @w)
+            """, c);
+        cmd.Parameters.AddWithValue("t", TenantId);
+        cmd.Parameters.AddWithValue("w", WaCliente);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>Humano libera a conversa de volta para a IA (incrementa a versão e registra a liberação).</summary>
+    public async Task LiberarAsync()
+    {
+        await using var c = new NpgsqlConnection(_banco.ConnectionStringAdmin);
+        await c.OpenAsync();
+        await using var cmd = new NpgsqlCommand("""
+            update conversas set estado = 'Automatico', versao_estado = versao_estado + 1, liberada_em = @agora
+             where tenant_id = @t and estado = 'Humano'
+            """, c);
+        cmd.Parameters.AddWithValue("t", TenantId);
+        cmd.Parameters.AddWithValue("agora", Relogio.Agora);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    public async Task<T?> ConsultarAsync<T>(string sql)
+    {
+        await using var c = new NpgsqlConnection(_banco.ConnectionStringAdmin);
+        await c.OpenAsync();
+        await using var cmd = new NpgsqlCommand(sql.Replace("@tenant", $"'{TenantId}'", StringComparison.Ordinal), c);
+        var r = await cmd.ExecuteScalarAsync();
+        return r is null or DBNull ? default : (T)r;
+    }
+
+    public Task<string?> EstadoConversaAsync() => ConsultarAsync<string>("select estado from conversas where tenant_id = @tenant");
+
+    public Task<long> ContarAsync(string tabelaEFiltro) => ConsultarAsync<long>($"select count(*) from {tabelaEFiltro}");
+
+    public async ValueTask DisposeAsync()
+    {
+        _cifrador.Dispose();
+        await App.DisposeAsync();
+        await WorkerDs.DisposeAsync();
+    }
+
+    private async Task AdminAsync(string sql, Guid x)
+    {
+        await using var c = new NpgsqlConnection(_banco.ConnectionStringAdmin);
+        await c.OpenAsync();
+        await using var cmd = new NpgsqlCommand(sql, c);
+        cmd.Parameters.AddWithValue("x", x);
+        await cmd.ExecuteNonQueryAsync();
+    }
+}
+
+internal sealed class PoliticaTenantBuilder
+{
+    public HashSet<string> Autonomos { get; } = ["horario", "precos"];
+
+    public HashSet<string> ExigemHumano { get; } = ["desconto"];
+
+    public HashSet<Classificacao> Classificacoes { get; } = [Classificacao.Publico];
+
+    public string Aviso { get; set; } = "Vou encaminhar sua mensagem para nossa equipe.";
+
+    public bool SemPolitica { get; set; }
+}

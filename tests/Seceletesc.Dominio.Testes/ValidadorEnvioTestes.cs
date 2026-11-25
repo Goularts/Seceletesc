@@ -226,7 +226,6 @@ public sealed class ValidadorEnvioTestes
     [Trait("Regra", "ADV-17")]
     [InlineData("Acesse https://promo-falsa.com para pagar.")]
     [InlineData("Veja em www.golpe.com.br")]
-    [InlineData("Mande para contato@outro-site.net")]
     public void Url_fora_da_lista_permitida_e_bloqueada(string texto)
     {
         var fonte = Fonte("horario", texto);
@@ -320,6 +319,21 @@ public sealed class ValidadorEnvioTestes
         var r = ValidadorEnvio.ValidarAvisoTransferencia(conversa, transicao.NovaVersao, Politica(p => p.Aviso = ""));
 
         Assert.Equal(MotivoBloqueio.AvisoNaoConfigurado, r.Motivo);
+    }
+
+    [Theory]
+    [Trait("Regra", "INV-23")]
+    [Trait("Regra", "INV-11")]
+    [InlineData("Seu CPF cadastrado é 529.982.247-25.")]
+    [InlineData("Mande para financeiro@empresa.com.br")]
+    public void Dado_protegido_no_texto_de_saida_e_bloqueado(string texto)
+    {
+        var fonte = Fonte("horario", texto);
+        var politica = Politica(p => p.Dominios.Add("empresa.com.br"));
+
+        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", fonte), Contexto(NovaConversa(), politica, fonte));
+
+        Assert.Equal(MotivoBloqueio.DadoProtegidoNaResposta, r.Motivo);
     }
 
     // ---- Achados da revisão de segurança da F1a ----
