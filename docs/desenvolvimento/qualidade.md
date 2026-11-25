@@ -45,6 +45,8 @@ Fluxo típico de uma entrega (recomendado, não obrigatório):
 4. `seguranca` e `guardiao-regras` revisam; achados voltam para o `desenvolvedor`.
 5. CI verde → merge.
 
+**Registro de revisão:** toda revisão gera um arquivo em `docs/desenvolvimento/revisoes/` com a disposição de **cada** achado: corrigido (com evidência), aceito como risco (motivo e onde está documentado), adiado (para qual fase) ou rejeitado (motivo). Nenhum achado fica sem disposição.
+
 Proporcional à complexidade: mudança pequena não precisa de todas as etapas.
 
 ## 4. Testes
