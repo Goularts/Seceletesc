@@ -107,14 +107,16 @@ O modelo só vê o que pode aparecer numa resposta automática. Assim, o validad
 
 Rascunho do modelo em **schema estrito** com limite de tamanho: `texto`, `fontes citadas (id + versão)`, `assunto declarado`. Inválido = bloqueio.
 
-O texto é normalizado (Unicode NFKC) antes das regras. Para na primeira falha:
+O texto é normalizado antes das regras: NFKC, remoção de todo caractere de formatação, dígitos em ASCII e sem acentos. As regras param na primeira falha, e tempo esgotado numa expressão regular conta como bloqueio:
+
+0. A resposta só contém caracteres do português: ASCII, letras do Latin-1, pontuação tipográfica e emoji. Isso fecha homóglifos de outros alfabetos, como o cirílico.
 
 1. Estado = `Automatico` e versão igual à lida no início.
 2. Assunto declarado ∈ assuntos autônomos da política vigente **e** coincide com o assunto das fontes citadas.
 3. Ao menos uma fonte citada. Toda fonte citada foi entregue pelo montador **nesta** rodada, está aprovada e vigente (consulta direta ao banco).
-4. Todo valor crítico no texto (preço, percentual, data, horário) aparece numa fonte citada. Termos de compromisso sem número ("aprovado", "garantido", "confirmado", "amanhã"; lista mantida na política) também exigem fonte que os contenha. Na dúvida, bloqueia.
+4. Todo número do texto, comparado junto com a sua unidade ("18h" ≠ "18 vezes"; "150,00" ≠ "150.000,00"), e todo número por extenso aparecem numa fonte citada. Termos de compromisso sem número ("aprovado", "garantido", "confirmado", "amanhã"; lista mantida na política) também exigem fonte que os contenha. Na dúvida, bloqueia.
 5. Padrões proibidos: autodeclaração como humano, menu numerado, elementos interativos, **qualquer URL** fora da allowlist da política.
-6. Nenhum número de telefone diferente do cliente atual. O isolamento de dados de outros clientes é estrutural (4.2), não detectado por lista de nomes.
+6. Nenhum número de telefone. O modelo nunca recebe telefones, então nenhum telefone pode sair numa resposta automática. O isolamento de dados de outros clientes é estrutural (4.2), não detectado por lista de nomes.
 
 Reprovado → nada é enviado; o motivo é registrado; a conversa vai para `TransferenciaPendente`; **nunca há nova geração**.
 
@@ -230,7 +232,8 @@ F0 a F3 não dependem de decisão pendente nem de infraestrutura externa. Todas 
 
 | Fase | Situação |
 |---|---|
-| F0 Fundação | implementada (branch `feat/f0-fundacao`): papéis sem superusuário, RLS forçado com `SET LOCAL`, histórico append-only com carimbo do banco, migrador com checksum, CI endurecido, contagem de testes por regra |
+| F1a Domínio | implementada: estados, validador, elegibilidade, rascunho estrito, dados protegidos. Revisão em revisoes/2026-11-25-f1a.md |
+| F0 Fundação | implementada (PR #2): papéis sem superusuário, RLS forçado com `SET LOCAL`, histórico append-only com carimbo do banco, migrador com checksum, CI endurecido, contagem de testes por regra |
 
 ## 6. Riscos
 

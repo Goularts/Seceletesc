@@ -5,8 +5,55 @@
 # Verificado por CoberturaRegrasTestes (contagem nos assemblies compilados; Skip e comentados não contam).
 # O CI compara este arquivo com o da branch de destino: nenhuma regra pode sair e nenhum mínimo pode cair.
 # Subir o mínimo ao acrescentar testes é bem-vindo.
+# Só entram aqui testes que verificam de fato a regra (revisão da F1a: rótulos errados foram removidos).
 
 # F0 Fundação
-INV-10 13  # isolamento entre empresas (RLS, papéis, pool)
-INV-14 3   # restrições no backend: fronteiras entre projetos
+INV-10 16  # isolamento entre empresas (RLS, papéis, pool) e escopo de conhecimento
+INV-14 8   # restrições no backend: fronteiras, schema estrito do rascunho, normalização
 INV-15 5   # histórico append-only
+
+# F1a Domínio (validador, estados, elegibilidade, dados protegidos)
+INV-1 2    # sem menus/opções numeradas
+INV-5 5    # IA muda sob controle humano; só liberação explícita volta ao automático
+INV-6 3    # backend decide o envio
+INV-8 2    # não inventar valores
+INV-9 1    # fora do escopo autorizado
+INV-11 2   # confidencial não vai ao modelo
+INV-13 1   # não se apresenta como humano
+INV-19 4   # propriedades do conhecimento (validade, classificações)
+INV-20 3   # só conhecimento aprovado e vigente
+INV-21 1   # exceção só no escopo autorizado
+INV-23 7   # dados protegidos detectados e retirados
+CTX-001 1
+CTX-002 1
+CTX-003 6
+CTX-004 1
+CTX-005 1
+CTX-006 2
+CTX-007 6
+CTX-009 2
+CTX-010 1
+CTX-011 2
+CTX-012 1
+CTX-014 3
+CTX-015 2
+CTX-016 1
+ADV-01 2
+ADV-02 2
+ADV-03 2
+ADV-04 1
+ADV-05 1
+ADV-07 1
+ADV-08 2
+ADV-09 1
+ADV-10 1
+ADV-12 2
+ADV-13 3
+ADV-14 1
+ADV-15 1
+ADV-17 3
+ADV-18 1
+ADV-21 1
+
+# Pendentes para a F1b (pipeline/worker): INV-7 (sem regeneração), INV-24 (sem templates, mensagem humana
+# fora da API assume a conversa), ADV-06 (injeção do cliente no pipeline), ADV-11, ADV-16, ADV-19, ADV-20.
