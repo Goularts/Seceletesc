@@ -32,6 +32,7 @@ internal static class Cenario
             ClassificacoesPermitidasRespostaAutomatica = b.Classificacoes,
             TextoAvisoTransferencia = b.Aviso,
             DominiosPermitidos = b.Dominios,
+            EmailsInstitucionais = b.Emails,
         };
     }
 
@@ -87,5 +88,7 @@ internal static class Cenario
         public string Aviso { get; set; } = "Vou encaminhar sua mensagem para nossa equipe.";
 
         public HashSet<string> Dominios { get; } = [];
+
+        public HashSet<string> Emails { get; } = [];
     }
 }

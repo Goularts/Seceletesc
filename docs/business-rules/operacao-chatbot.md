@@ -44,7 +44,9 @@ A orientação interna pode conter informação específica. Por isso ela não v
 
 ### Transferência
 
-- O humano pode assumir a conversa a qualquer momento, não só quando a IA pede.
+- O humano pode assumir a conversa a qualquer momento, não só quando a IA pede, dentro das permissões do papel dele.
+- **Atribuição** (decisão do Victor, 2026-11-25): atendimentos que precisam de humano formam uma fila. O atendente vê as conversas atribuídas a ele e a fila de atendimentos disponíveis. Supervisor e administrador gerenciam a fila da empresa. O isolamento entre empresas vale sempre.
+  - Detalhamento técnico, **a confirmar pelo Victor**: o atendente só atua (lê as mensagens, assume, responde, orienta) nas conversas atribuídas a ele; da fila, vê só o resumo, com o telefone parcialmente oculto, e pega o atendimento ao assumir; não assume conversa que está com a IA fora da fila; liberar a conversa para a IA tira a atribuição.
 - A IA pode avisar o cliente sobre a transferência quando pertinente, sem prometer prazo ou disponibilidade não confirmados. O aviso passa pela mesma validação do backend e, como qualquer mensagem automática, não pode ser enviado se um humano já tiver assumido a conversa.
 
 ### Fora da janela de 24h do WhatsApp
@@ -61,7 +63,8 @@ A orientação interna pode conter informação específica. Por isso ela não v
 - Só humanos com permissão podem ver o dado original.
 - **Tratamento proporcional ao risco** (decisão do Victor, 2026-11-25), igual para respostas automáticas e respostas humanas enviadas pela API:
   - **Dado pessoal comum** (e-mail, CEP): usado só quando necessário, autorizado e pertinente ao atendimento. Na resposta automática, só se constar numa fonte aprovada citada; na resposta humana, quem autoriza é o humano. Depois do envio, o histórico guarda só o texto mascarado e o valor criptografado.
-  - **Dado de identificação** (CPF, CNPJ, RG, documentos, chave PIX): exige finalidade definida e acesso restrito. Enquanto não houver mecanismo de finalidade, não sai em mensagem nenhuma; o atendimento é feito pelo humano por outro meio.
+  - **E-mail institucional × pessoal** (decisão do Victor, 2026-11-25): só os endereços institucionais listados na política da empresa são da empresa. Qualquer outro e-mail é tratado como pessoal: nunca entra em conhecimento nem sai em resposta automática.
+  - **Dado de identificação** (CPF, CNPJ, RG, documentos, chave PIX): exige finalidade definida e acesso restrito. No MVP, fica bloqueado até existir um fluxo seguro com finalidade definida, autorização, controle de acesso e retenção apropriada (decisão do Victor, 2026-11-25): não sai em mensagem nenhuma; o atendimento é feito pelo humano por outro meio.
   - **Dado financeiro confidencial** (número completo de cartão): nunca reproduzido em mensagem nem armazenado em texto puro.
   - **Dados de outros clientes ou empresas**: acesso e divulgação proibidos.
 - A proteção vale também para entrada, armazenamento, logs e auditoria: logs e eventos não registram o valor do dado. Sem autorização ou mecanismo seguro para um dado, a operação é bloqueada e encaminhada ao tratamento humano.
@@ -90,6 +93,19 @@ Se a validação falhar:
 4. **Nunca** há nova geração após um bloqueio. A IA aguarda a resposta da supervisão.
 
 Controles determinísticos sempre que possível. Uma segunda chamada ao modelo pode complementar, nunca substituir.
+
+### Políticas fundamentais
+
+Decisão do Victor (2026-11-25): um conjunto mínimo de proibições e restrições vale para toda empresa e **nem o administrador consegue desativar pela política**. A política só acrescenta restrições a esse piso:
+
+- vazamento de dados: isolamento entre empresas e clientes, dados protegidos (seção 3a), nenhum telefone em resposta automática;
+- uso de conhecimento não aprovado, vencido, revogado ou fora do escopo;
+- compromissos comerciais não autorizados: valores, prazos e termos de compromisso só com fonte aprovada; os termos de compromisso padrão não podem ser removidos, só ampliados;
+- respostas fora do escopo: só assuntos autônomos, com fonte do mesmo assunto;
+- informação interna (INT) e restrita (RES) nunca vão para resposta automática (detalhamento técnico, **a confirmar pelo Victor**: hoje NEG, EXC e CLI continuam liberáveis pelo administrador, com as condições da seção de permissões comerciais);
+- estado da conversa, autodeclaração como humano, elementos interativos e URLs fora da lista.
+
+Essas regras não dependem só de palavras proibidas: são regras estruturadas (fonte aprovada e vigente, escopo, assunto, estado da conversa, valores comparados com a fonte) checadas pelo backend.
 
 ## 4. Regras de contexto
 

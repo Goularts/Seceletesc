@@ -19,7 +19,33 @@ builder.Services.AddSingleton(sp => new ServicoSupervisao(
 builder.Services.AddSingleton(sp => new ServicoConhecimento(
     sp.GetRequiredKeyedService<NpgsqlDataSource>(EndpointsSupervisao.ChaveDataSource), sp.GetRequiredService<TimeProvider>()));
 
+// Atrás de um proxy que termina o TLS, só os proxies listados podem informar o esquema original (HTTPS).
+var proxies = builder.Configuration.GetValue<string>("Seguranca:ProxiesConfiaveis");
+if (!string.IsNullOrWhiteSpace(proxies))
+{
+    builder.Services.Configure<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>(o =>
+    {
+        o.ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor;
+        o.KnownIPNetworks.Clear();
+        o.KnownProxies.Clear();
+        foreach (var ip in proxies.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            o.KnownProxies.Add(System.Net.IPAddress.Parse(ip));
+        }
+    });
+}
+
 var app = builder.Build();
+
+if (!string.IsNullOrWhiteSpace(proxies))
+{
+    app.UseForwardedHeaders();
+}
+
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHsts();
+}
 
 app.MapGet("/saude", () => Results.Ok(new { status = "ok" }));
 app.MapSupervisao();

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using Npgsql;
+using Seceletesc.Infraestrutura.Banco;
 using NpgsqlTypes;
 using Seceletesc.Aplicacao.Envio;
 using Seceletesc.Dominio.Conhecimento;
@@ -75,8 +76,33 @@ internal sealed class AmbientePipeline : IAsyncDisposable
         return (rsa.ExportSubjectPublicKeyInfoPem(), rsa.ExportPkcs8PrivateKeyPem());
     });
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, string> Credenciais = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, string> CredencialAdministrador = new();
+
     private readonly BancoFixture _banco;
     private readonly CifradorDadosProtegidos _cifrador;
+
+    /// <summary>
+    /// Chave para comprovar identidade nos testes que escrevem direto no banco com o papel da supervisão: a do próprio
+    /// usuário, se ele foi criado por este ambiente; senão, a do administrador do tenant (para testar a regra do
+    /// trigger, e não a falta de identidade).
+    /// </summary>
+    public static string CredencialPara(Guid tenant, Guid? usuario) =>
+        usuario is { } u && Credenciais.TryGetValue(u, out var k) ? k : CredencialAdministrador[tenant];
+
+    /// <summary>
+    /// Executa no banco com o papel do data source. Com o papel da supervisão, comprova a identidade antes
+    /// (ver <see cref="CredencialPara"/>), como a API faz; os demais papéis não têm identidade humana.
+    /// </summary>
+    public static Task<T> ExecutarComPapelAsync<T>(
+        NpgsqlDataSource ds, Guid tenant, Guid? usuario, Func<NpgsqlConnection, NpgsqlTransaction, CancellationToken, Task<T>> trabalho)
+    {
+        ArgumentNullException.ThrowIfNull(ds);
+        var executor = new ExecutorTenant(ds);
+        return new NpgsqlConnectionStringBuilder(ds.ConnectionString).Username == "supervisao_teste"
+            ? executor.ExecutarAutenticadoAsync(tenant, CredencialPara(tenant, usuario), trabalho)
+            : executor.ExecutarAsync(tenant, trabalho);
+    }
 
     private AmbientePipeline(BancoFixture banco, Guid tenantId, Guid supervisorId, string chaveSupervisor)
     {
@@ -86,8 +112,10 @@ internal sealed class AmbientePipeline : IAsyncDisposable
         App = banco.CriarDataSource("app_teste", maxPool: 4);
         WorkerDs = banco.CriarDataSource("worker_teste", maxPool: 4);
         SupervisaoDs = banco.CriarDataSource("supervisao_teste", maxPool: 4);
-        Supervisor = new UsuarioSupervisao(supervisorId, tenantId, PapelSupervisao.Administrador);
+        Supervisor = new UsuarioSupervisao(supervisorId, tenantId, PapelSupervisao.Administrador) { Credencial = chaveSupervisor };
         ChaveSupervisor = chaveSupervisor;
+        Credenciais[supervisorId] = chaveSupervisor;
+        CredencialAdministrador[tenantId] = chaveSupervisor;
         Supervisao = new ServicoSupervisao(SupervisaoDs, Relogio);
         Conhecimento = new ServicoConhecimento(SupervisaoDs, Relogio);
     }
@@ -132,6 +160,7 @@ internal sealed class AmbientePipeline : IAsyncDisposable
             AssuntosExigemHumano = b.ExigemHumano,
             ClassificacoesPermitidasRespostaAutomatica = b.Classificacoes,
             TextoAvisoTransferencia = b.Aviso,
+            EmailsInstitucionais = b.Emails,
         };
 
         await using var c = new NpgsqlConnection(banco.ConnectionStringAdmin);
@@ -179,7 +208,8 @@ internal sealed class AmbientePipeline : IAsyncDisposable
     public async Task<(UsuarioSupervisao Usuario, string Chave)> CriarUsuarioAsync(PapelSupervisao papel)
     {
         var (id, chave) = await AdministracaoSupervisao.CriarSupervisorAsync(_banco.ConnectionStringDono, TenantId, "Usuário " + papel, papel);
-        return (new UsuarioSupervisao(id, TenantId, papel), chave);
+        Credenciais[id] = chave;
+        return (new UsuarioSupervisao(id, TenantId, papel) { Credencial = chave }, chave);
     }
 
     public MensagemRecebida Mensagem(string texto, string? wamid = null, DateTimeOffset? em = null) =>
@@ -199,10 +229,12 @@ internal sealed class AmbientePipeline : IAsyncDisposable
         await c.OpenAsync();
         await DefinirTenantNaSessaoAsync(c, t);
         var aprovador = await AdministradorDoTenantAsync(c, t);
+        await using var tx = await c.BeginTransactionAsync();
+        await ComprovarIdentidadeAsync(c, tx, aprovador, t);
 
         async Task Executar(string sql, int versao)
         {
-            await using var cmd = new NpgsqlCommand(sql, c);
+            await using var cmd = new NpgsqlCommand(sql, c, tx);
             cmd.Parameters.AddWithValue("i", itemId);
             cmd.Parameters.AddWithValue("t", t);
             cmd.Parameters.AddWithValue("a", assunto);
@@ -223,12 +255,14 @@ internal sealed class AmbientePipeline : IAsyncDisposable
             """, 1);
         if (status == "Rev")
         {
+            await tx.CommitAsync();
             return new ChaveFonte(itemId, 1);
         }
 
         if (status == "Rejeitado")
         {
             await Executar("update itens_conhecimento set status = 'Rejeitado', alterado_por = @u where id = @i", 1);
+            await tx.CommitAsync();
             return new ChaveFonte(itemId, 1);
         }
 
@@ -242,6 +276,7 @@ internal sealed class AmbientePipeline : IAsyncDisposable
             await Executar("update itens_conhecimento set status = 'Revogado', alterado_por = @u where id = @i", 2);
         }
 
+        await tx.CommitAsync();
         return new ChaveFonte(itemId, 2);
     }
 
@@ -252,9 +287,24 @@ internal sealed class AmbientePipeline : IAsyncDisposable
         var tenant = (Guid)(await new NpgsqlCommand($"select tenant_id from itens_conhecimento where id = '{fonte.ItemId}'", c).ExecuteScalarAsync())!;
         await DefinirTenantNaSessaoAsync(c, tenant);
         var admin = await AdministradorDoTenantAsync(c, tenant);
-        await using var cmd = new NpgsqlCommand("update itens_conhecimento set status = 'Revogado', alterado_por = @u where id = @x", c);
+        await using var tx = await c.BeginTransactionAsync();
+        await ComprovarIdentidadeAsync(c, tx, admin, tenant);
+        await using var cmd = new NpgsqlCommand("update itens_conhecimento set status = 'Revogado', alterado_por = @u where id = @x", c, tx);
         cmd.Parameters.AddWithValue("u", admin);
         cmd.Parameters.AddWithValue("x", fonte.ItemId);
+        await cmd.ExecuteNonQueryAsync();
+        await tx.CommitAsync();
+    }
+
+    /// <summary>
+    /// A semeadura roda como superusuário e não tem a chave do administrador semeado: grava direto a identidade da
+    /// transação (migração 0005), como faria autenticar_transacao. Os papéis da aplicação não conseguem fazer isso.
+    /// </summary>
+    internal static async Task ComprovarIdentidadeAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid usuario, Guid tenant)
+    {
+        await using var cmd = new NpgsqlCommand("insert into autenticacoes_transacao (xid, usuario_id, tenant_id) values (pg_current_xact_id(), @u, @t)", c, tx);
+        cmd.Parameters.AddWithValue("u", usuario);
+        cmd.Parameters.AddWithValue("t", tenant);
         await cmd.ExecuteNonQueryAsync();
     }
 
@@ -348,4 +398,6 @@ internal sealed class PoliticaTenantBuilder
     public string Aviso { get; set; } = "Vou encaminhar sua mensagem para nossa equipe.";
 
     public bool SemPolitica { get; set; }
+
+    public HashSet<string> Emails { get; } = [];
 }

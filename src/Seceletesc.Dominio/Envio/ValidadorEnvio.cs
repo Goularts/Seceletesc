@@ -185,6 +185,13 @@ public static partial class ValidadorEnvio
             {
                 return ResultadoValidacao.Bloquear(MotivoBloqueio.DadoProtegidoNaResposta, ocorrencia.Categoria.ToString());
             }
+
+            // E-mail fora da lista institucional da política é pessoal (decisão 29): nunca sai em resposta automática,
+            // mesmo que esteja numa fonte aprovada antiga.
+            if (ocorrencia.Categoria == CategoriaDadoProtegido.Email && !politica.EhEmailInstitucional(ocorrencia.Valor))
+            {
+                return ResultadoValidacao.Bloquear(MotivoBloqueio.DadoProtegidoNaResposta, "Email pessoal");
+            }
         }
 
         original = mascarado.Texto;

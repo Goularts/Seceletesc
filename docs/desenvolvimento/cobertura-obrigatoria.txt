@@ -8,22 +8,22 @@
 # Só entram aqui testes que verificam de fato a regra (revisão da F1a: rótulos errados foram removidos).
 
 # F0 Fundação
-INV-10 29  # isolamento entre empresas (RLS, papéis, pool) e escopo de conhecimento
-INV-14 9   # restrições no backend: fronteiras, schema estrito do rascunho, normalização
-INV-15 12   # histórico append-only
+INV-10 33  # isolamento entre empresas (RLS, papéis, pool) e escopo de conhecimento
+INV-14 10   # restrições no backend: fronteiras, schema estrito do rascunho, normalização
+INV-15 14   # histórico append-only
 
 # F1a Domínio (validador, estados, elegibilidade, dados protegidos)
 INV-1 2    # sem menus/opções numeradas
-INV-5 17    # IA muda sob controle humano; só liberação explícita volta ao automático
+INV-5 19    # IA muda sob controle humano; só liberação explícita volta ao automático
 INV-6 15    # backend decide o envio
-INV-8 4    # não inventar valores
+INV-8 6    # não inventar valores
 INV-9 2    # fora do escopo autorizado
-INV-11 12   # confidencial não vai ao modelo
+INV-11 14   # confidencial não vai ao modelo
 INV-13 1   # não se apresenta como humano
-INV-19 11   # propriedades do conhecimento (validade, classificações)
-INV-20 9   # só conhecimento aprovado e vigente
+INV-19 12   # propriedades do conhecimento (validade, classificações)
+INV-20 10   # só conhecimento aprovado e vigente
 INV-21 2   # exceção só no escopo autorizado
-INV-23 21   # dados protegidos detectados e retirados
+INV-23 24   # dados protegidos detectados e retirados
 CTX-001 1
 CTX-002 1
 CTX-003 6
@@ -61,7 +61,7 @@ INV-3 1    # bloqueio aciona supervisão
 INV-7 2    # bloqueio nunca é regenerado; falha do motor = bloqueio
 INV-12 1   # instrução do cliente não muda a decisão
 INV-16 6   # IA só sugere (Rev)
-INV-17 8   # só humano aprova
+INV-17 9   # só humano aprova
 INV-24 7   # fora da janela de 24h: cancela e marca retomada humana
 ADV-06 1
 ADV-16 2
@@ -70,7 +70,7 @@ ADV-20 3
 ADV-23 1
 
 # F2 Supervisão (API)
-INV-4 5    # humano responde pelo mesmo número ou orienta
+INV-4 8    # humano responde pelo mesmo número ou orienta
 INV-18 6   # exceção em resposta humana não vira condição geral
 ADV-11 1
 ADV-22 3
@@ -78,5 +78,9 @@ ADV-22 3
 # F3 Governança do conhecimento, papéis e dados proporcionais
 # (mínimos das regras acima já incluem os testes da F3: INV-17, INV-18, INV-19, INV-23, INV-24, CTX-012, CTX-014)
 CTX-013 1  # conhecimento reutilizado tem origem, versão, escopo e autorização
+
+# Pós-F3 (direcionamento do Victor, 2026-11-25)
+INV-25 8   # políticas fundamentais: piso que a política não desativa
+INV-26 23  # menor privilégio e identidade comprovada no banco (atribuição, visibilidade, autoria)
 
 # Pendentes: INV-24 eco do app (F4), avaliação de pertinência/tom (F5), sugestão pela IA (F5, INV-16).

@@ -18,7 +18,10 @@ public static class PoliticaJson
             AssuntosExigemHumano = [.. p.AssuntosExigemHumano],
             ClassificacoesPermitidas = [.. p.ClassificacoesPermitidasRespostaAutomatica.Select(c => c.ToString())],
             TextoAvisoTransferencia = p.TextoAvisoTransferencia,
-            TermosCompromisso = [.. p.TermosCompromisso],
+            // O piso dos termos vem do código: grava só o que a política acrescenta.
+            TermosCompromisso = [.. p.TermosCompromissoAdicionais],
+            EmailsInstitucionais = [.. p.EmailsInstitucionais.Order(StringComparer.Ordinal)],
+            ValidadeMaximaDias = p.ValidadeMaximaDias.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value),
             DominiosPermitidos = [.. p.DominiosPermitidos],
             EnviarConhecimentoClienteAoModelo = p.EnviarConhecimentoClienteAoModelo,
             ValidadeMensagemAutomaticaSegundos = (int)p.ValidadeMensagemAutomatica.TotalSeconds,
@@ -28,6 +31,13 @@ public static class PoliticaJson
     public static PoliticaTenant Ler(Guid tenantId, int versao, string json)
     {
         var dto = JsonSerializer.Deserialize<Dto>(json, Opcoes) ?? throw new InvalidOperationException("Política vazia.");
+        // Elemento nulo em qualquer lista é formato inválido (revisão pós-F3, S10), não erro interno.
+        if (new[] { dto.AssuntosAutonomos, dto.AssuntosExigemHumano, dto.ClassificacoesPermitidas, dto.TermosCompromisso, dto.DominiosPermitidos, dto.EmailsInstitucionais }
+            .Any(l => l is not null && l.Any(x => x is null)))
+        {
+            throw new FormatException("listas da política não aceitam elementos nulos");
+        }
+
         var padrao = new PoliticaTenant { TenantId = tenantId, Versao = versao, AssuntosAutonomos = new HashSet<string>() };
         return padrao with
         {
@@ -37,7 +47,9 @@ public static class PoliticaJson
                 ? new HashSet<Classificacao>(c.Select(LerClassificacao))
                 : padrao.ClassificacoesPermitidasRespostaAutomatica,
             TextoAvisoTransferencia = dto.TextoAvisoTransferencia ?? string.Empty,
-            TermosCompromisso = dto.TermosCompromisso ?? padrao.TermosCompromisso,
+            TermosCompromisso = dto.TermosCompromisso ?? [],
+            EmailsInstitucionais = new HashSet<string>((dto.EmailsInstitucionais ?? []).Select(e => e.Trim().ToLowerInvariant())),
+            ValidadeMaximaDias = (dto.ValidadeMaximaDias ?? []).ToDictionary(kv => LerClassificacao(kv.Key), kv => kv.Value),
             DominiosPermitidos = new HashSet<string>(dto.DominiosPermitidos ?? []),
             EnviarConhecimentoClienteAoModelo = dto.EnviarConhecimentoClienteAoModelo,
             ValidadeMensagemAutomatica = dto.ValidadeMensagemAutomaticaSegundos is > 0 and var s
@@ -45,6 +57,10 @@ public static class PoliticaJson
                 : padrao.ValidadeMensagemAutomatica,
         };
     }
+
+    /// <summary>Classificações pedidas no JSON, antes do piso (para recusar explicitamente INT e RES na publicação).</summary>
+    public static IReadOnlyList<string> ClassificacoesPedidas(string json) =>
+        JsonSerializer.Deserialize<Dto>(json, Opcoes)?.ClassificacoesPermitidas ?? [];
 
     /// <summary>
     /// Só o nome exato de uma classificação. Enum.Parse aceitaria números ("99") e combinações ("Publico, Interno"),
@@ -68,6 +84,10 @@ public static class PoliticaJson
         public List<string>? TermosCompromisso { get; set; }
 
         public List<string>? DominiosPermitidos { get; set; }
+
+        public List<string>? EmailsInstitucionais { get; set; }
+
+        public Dictionary<string, int>? ValidadeMaximaDias { get; set; }
 
         public bool EnviarConhecimentoClienteAoModelo { get; set; }
 

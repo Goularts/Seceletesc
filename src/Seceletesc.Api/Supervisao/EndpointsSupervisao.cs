@@ -14,6 +14,8 @@ public sealed record PedidoPolitica(int VersaoEsperada, JsonElement Conteudo);
 
 public sealed record PedidoMotivo(string? Motivo);
 
+public sealed record PedidoAtribuir(Guid? Responsavel);
+
 public sealed record PedidoPermissoes(string[]? Classificacoes, string? EscopoTipo, Guid? EscopoRef, DateTimeOffset? ValidoAte)
 {
     public PermissoesConhecimento Converter() => new(Classificacoes, EscopoTipo, EscopoRef, ValidoAte);
@@ -38,6 +40,10 @@ public static class EndpointsSupervisao
 
     private const string ItemUsuario = "seceletesc.usuario";
 
+    private static readonly Action<ILogger, string?, Exception?> LogSemHttps =
+        LoggerMessage.Define<string?>(LogLevel.Warning, new EventId(1002, "SupervisaoSemHttps"),
+            "Requisição à supervisão sem HTTPS recusada (ip {Ip})");
+
     private static readonly Action<ILogger, string, string?, Exception?> LogFalhaAutenticacao =
         LoggerMessage.Define<string, string?>(LogLevel.Warning, new EventId(1001, "FalhaAutenticacaoSupervisao"),
             "Falha de autenticação na supervisão: {Motivo} (ip {Ip})");
@@ -45,8 +51,18 @@ public static class EndpointsSupervisao
     public static void MapSupervisao(this WebApplication app)
     {
         // Autentica ANTES do model binding: sem chave válida, o corpo nem é lido (nada de 400 que revele o formato).
-        app.UseWhen(h => h.Request.Path.StartsWithSegments("/supervisao", StringComparison.Ordinal), b =>
+        // HTTPS obrigatório fora do desenvolvimento (decisão 30): a chave vai no cabeçalho. Recusa sem redirecionar,
+        // porque o redirecionamento chegaria tarde (a chave já teria trafegado em claro) e ensinaria o cliente a errar.
+        // Fora do desenvolvimento não há como desligar (revisão pós-F3, S9); em desenvolvimento, dá para ligar.
+        var exigirHttps = !app.Environment.IsDevelopment() || app.Configuration.GetValue("Seguranca:ExigirHttps", false);
+        // O roteamento não diferencia maiúsculas: o perímetro também não pode (revisão pós-F3, S3).
+        app.UseWhen(h => h.Request.Path.StartsWithSegments("/supervisao", StringComparison.OrdinalIgnoreCase), b =>
         {
+            if (exigirHttps)
+            {
+                b.Use(ExigirHttpsAsync);
+            }
+
             b.Use(TraduzirRecusaDoBancoAsync);
             b.Use(AutenticarAsync);
         });
@@ -72,6 +88,9 @@ public static class EndpointsSupervisao
 
         g.MapPost("/conversas/{id:guid}/orientar", async (HttpContext h, ServicoSupervisao s, Guid id, PedidoOrientar p, CancellationToken ct) =>
             Responder(await s.OrientarAsync(Usuario(h), id, p.Texto, p.Assunto, ct), StatusCodes.Status201Created));
+
+        g.MapPost("/conversas/{id:guid}/atribuir", async (HttpContext h, ServicoSupervisao s, Guid id, PedidoAtribuir p, CancellationToken ct) =>
+            Responder(await s.AtribuirAsync(Usuario(h), id, p.Responsavel, ct)));
 
         g.MapPost("/conversas/{id:guid}/encerrar-retomada", async (HttpContext h, ServicoSupervisao s, Guid id, PedidoMotivo p, CancellationToken ct) =>
             Responder(await s.EncerrarRetomadaAsync(Usuario(h), id, p.Motivo, ct)));
@@ -107,20 +126,34 @@ public static class EndpointsSupervisao
             Responder(await s.PublicarPoliticaAsync(Usuario(h), p.VersaoEsperada, p.Conteudo.ValueKind == JsonValueKind.Object ? p.Conteudo.GetRawText() : null, ct)));
     }
 
+    private static async Task ExigirHttpsAsync(HttpContext http, RequestDelegate next)
+    {
+        if (!http.Request.IsHttps)
+        {
+            var logger = http.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Seceletesc.Supervisao");
+            LogSemHttps(logger, http.Connection.RemoteIpAddress?.ToString(), null);
+            http.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await http.Response.WriteAsJsonAsync(new { title = "A API de supervisão exige HTTPS." });
+            return;
+        }
+
+        await next(http);
+    }
+
     /// <summary>
-    /// Uma trava do banco recusou a operação (ex.: o papel do usuário mudou entre a autenticação e a transação).
-    /// Responde 403 ou 409 com mensagem genérica, sem SQL nem pilha.
+    /// Uma trava do banco recusou a operação (ex.: o papel do usuário mudou entre a autenticação e a transação, ou a
+    /// identidade não se comprovou no banco). Responde 403 ou 409 com mensagem genérica, sem SQL nem pilha.
     /// </summary>
-    private static async Task TraduzirRecusaDoBancoAsync(HttpContext http, RequestDelegate next)
+    internal static async Task TraduzirRecusaDoBancoAsync(HttpContext http, RequestDelegate next)
     {
         try
         {
             await next(http);
         }
-        catch (Npgsql.PostgresException e) when (!http.Response.HasStarted && e.SqlState is "P0001" or "42501")
+        catch (Npgsql.PostgresException e) when (!http.Response.HasStarted && e.SqlState is "P0001" or "42501" or "28000")
         {
             http.Response.Clear();
-            http.Response.StatusCode = e.SqlState == "42501" ? StatusCodes.Status403Forbidden : StatusCodes.Status409Conflict;
+            http.Response.StatusCode = e.SqlState == "P0001" ? StatusCodes.Status409Conflict : StatusCodes.Status403Forbidden;
             await http.Response.WriteAsJsonAsync(new { title = "Operação recusada pelas regras do sistema." });
         }
     }

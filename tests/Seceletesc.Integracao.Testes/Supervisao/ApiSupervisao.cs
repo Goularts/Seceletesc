@@ -47,4 +47,13 @@ internal static class ExtensoesTesteSupervisao
         await amb.Worker().ProcessarProximoAsync();
         return await amb.ConversaIdAsync();
     }
+
+    /// <summary>Conversa na fila: a IA bloqueou uma resposta e a conversa aguarda um humano, sem responsável.</summary>
+    public static async Task<Guid> ConversaNaFilaAsync(this AmbientePipeline amb, string horario = SupervisaoApiTestes.Horario)
+    {
+        var conversa = await amb.ConversaAtendidaPelaIaAsync(horario);
+        await amb.Orquestrador(new MotorFalso(_ => Task.FromResult("{}"))).ProcessarAsync(amb.Mensagem("Quero falar com alguém."));
+        Assert.Equal("TransferenciaPendente", await amb.EstadoConversaAsync());
+        return conversa;
+    }
 }

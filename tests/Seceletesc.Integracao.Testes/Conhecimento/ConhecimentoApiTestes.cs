@@ -96,7 +96,7 @@ public sealed class ConhecimentoApiTestes(BancoFixture banco)
     public async Task Atendente_assume_e_responde_mas_nao_libera_nem_publica_politica()
     {
         await using var amb = await AmbientePipeline.CriarAsync(banco);
-        var conversa = await amb.ConversaAtendidaPelaIaAsync(Horario);
+        var conversa = await amb.ConversaNaFilaAsync(Horario);
         await using var api = amb.Api();
         var (_, chave) = await amb.CriarUsuarioAsync(PapelSupervisao.Atendente);
         var atendente = api.Cliente(chave);
@@ -104,7 +104,7 @@ public sealed class ConhecimentoApiTestes(BancoFixture banco)
         var assumir = await atendente.PostAsync(new Uri($"/supervisao/conversas/{conversa}/assumir", UriKind.Relative), null);
         var responder = await atendente.PostAsJsonAsync($"/supervisao/conversas/{conversa}/responder", new { texto = "Olá, já verifico." });
         await amb.Worker().ProcessarProximoAsync();
-        var liberar = await atendente.PostAsJsonAsync($"/supervisao/conversas/{conversa}/liberar", new { versaoEsperada = 2 });
+        var liberar = await atendente.PostAsJsonAsync($"/supervisao/conversas/{conversa}/liberar", new { versaoEsperada = 3 });
         var politica = await atendente.PutAsJsonAsync("/supervisao/politica", new { versaoEsperada = 1, conteudo = new { assuntosAutonomos = new[] { "horario" } } });
 
         Assert.Equal(HttpStatusCode.OK, assumir.StatusCode);
@@ -426,7 +426,7 @@ public sealed class ConhecimentoApiTestes(BancoFixture banco)
     public async Task Email_da_empresa_aprovado_em_conhecimento_sai_na_resposta_automatica_e_fica_mascarado_no_historico()
     {
         const string fonte = "Segunda via de boleto pelo e-mail financeiro@empresa.com.br.";
-        await using var amb = await AmbientePipeline.CriarAsync(banco);
+        await using var amb = await AmbientePipeline.CriarAsync(banco, p => p.Emails.Add("financeiro@empresa.com.br"));
         await using var api = amb.Api();
         var admin = api.Cliente(amb.ChaveSupervisor);
         var item = await SugerirAsync(admin, "horario", fonte);

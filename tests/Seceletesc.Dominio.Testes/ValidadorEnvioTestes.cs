@@ -374,9 +374,23 @@ public sealed class ValidadorEnvioTestes
         const string texto = "Para segunda via, escreva para financeiro@empresa.com.br.";
         var fonte = Fonte("horario", "Segunda via de boleto: financeiro@empresa.com.br.");
 
-        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", fonte), Contexto(NovaConversa(), Politica(), fonte));
+        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", fonte), Contexto(NovaConversa(), Politica(p => p.Emails.Add("financeiro@empresa.com.br")), fonte));
 
         Assert.True(r.Aprovado, r.Motivo?.ToString());
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-23")]
+    [Trait("Regra", "INV-25")]
+    public void Email_da_fonte_fora_da_lista_institucional_e_pessoal_e_bloqueado()
+    {
+        // Decisão 29: só os e-mails institucionais da política são da empresa, mesmo que uma fonte aprovada traga outro.
+        const string texto = "Para segunda via, escreva para joao.silva@gmail.com.";
+        var fonte = Fonte("horario", "Segunda via de boleto: joao.silva@gmail.com.");
+
+        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", fonte), Contexto(NovaConversa(), Politica(p => p.Emails.Add("financeiro@empresa.com.br")), fonte));
+
+        Assert.Equal(MotivoBloqueio.DadoProtegidoNaResposta, r.Motivo);
     }
 
     [Theory]
@@ -390,8 +404,11 @@ public sealed class ValidadorEnvioTestes
     public void Email_que_nao_consta_na_fonte_citada_e_bloqueado(string texto)
     {
         var fonte = Fonte("horario", "Segunda via de boleto: financeiro@empresa.com.br.");
+        // Todos os endereços na lista institucional: o bloqueio vem só da comparação exata com a fonte.
+        var politica = Politica(p => p.Emails.UnionWith(["financeiro@empresa.com.br", "outro@empresa.com.br", "financeiro@outra-empresa.com.br",
+            "ro@empresa.com.br", "financeiro@empresa.com", "financeiro@empresa.com.br.golpe.com"]));
 
-        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", fonte), Contexto(NovaConversa(), Politica(), fonte));
+        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", fonte), Contexto(NovaConversa(), politica, fonte));
 
         Assert.Equal(MotivoBloqueio.DadoProtegidoNaResposta, r.Motivo);
     }

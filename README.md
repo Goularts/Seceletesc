@@ -60,6 +60,7 @@ Rotas (todas exigem a chave; o tenant vem do usuário):
 | `POST /supervisao/conversas/{id}/orientar` | `{"texto": "...", "assunto": "..."}`: vira sugestão REV |
 | `GET /supervisao/politica` | política vigente |
 | `PUT /supervisao/politica` | `{"versaoEsperada": n, "conteudo": {...}}`: publica nova versão |
+| `POST /supervisao/conversas/{id}/atribuir` | `{"responsavel": "ID"}` ou `null` para devolver à fila (supervisor ou administrador) |
 | `POST /supervisao/conversas/{id}/encerrar-retomada` | `{"motivo": "..."}`: encerra a pendência de retomada pelo celular |
 | `GET /supervisao/conhecimento?status=` | lista o conhecimento da empresa |
 | `GET /supervisao/conhecimento/{id}` | versões e auditoria |
@@ -69,4 +70,4 @@ Rotas (todas exigem a chave; o tenant vem do usuário):
 | `POST /supervisao/conhecimento/{id}/rejeitar` | `{"motivo"}` |
 | `POST /supervisao/conhecimento/{id}/revogar` | `{"motivo"}` (só administrador) |
 
-Papéis (`--papel`, padrão `Atendente`; troca com `alterar-papel --usuario ID --papel PAPEL`): o atendente vê, assume, responde, orienta e sugere; o supervisor também libera, encerra pendências e revisa e aprova conhecimento comum; o administrador também publica a política, aprova NEG, EXC, RES e CLI e revoga.
+Papéis (`--papel`, padrão `Atendente`; troca com `alterar-papel --usuario ID --papel PAPEL`): o atendente vê as conversas atribuídas a ele e a fila, pega da fila ao assumir, responde, orienta e sugere, e vê só conhecimento aprovado PUB e TMP; o supervisor também libera, encerra pendências e revisa e aprova conhecimento comum; o administrador também publica a política, aprova NEG, EXC, RES e CLI e revoga. Fora do ambiente de desenvolvimento, a API de supervisão só aceita HTTPS.
