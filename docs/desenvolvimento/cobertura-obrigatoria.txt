@@ -7,6 +7,50 @@
 # Subir o mínimo ao acrescentar testes é bem-vindo.
 
 # F0 Fundação
-INV-10 13  # isolamento entre empresas (RLS, papéis, pool)
-INV-14 3   # restrições no backend: fronteiras entre projetos
+INV-10 15  # isolamento entre empresas (RLS, papéis, pool) e escopo de conhecimento
+INV-14 8   # restrições no backend: fronteiras, schema estrito do rascunho, normalização
 INV-15 5   # histórico append-only
+
+# F1a Domínio (validador, estados, elegibilidade, dados protegidos)
+INV-1 1    # sem menus/opções numeradas
+INV-5 5    # IA muda sob controle humano; só liberação explícita volta ao automático
+INV-6 2    # backend decide o envio
+INV-7 1    # bloqueio → transferência
+INV-8 1    # não inventar valores
+INV-9 1    # fora do escopo autorizado
+INV-11 2   # confidencial não vai ao modelo
+INV-13 1   # não se apresenta como humano
+INV-19 3   # propriedades do conhecimento
+INV-20 3   # só conhecimento aprovado e vigente
+INV-21 1   # exceção só no escopo autorizado
+INV-23 7   # dados protegidos detectados e retirados
+INV-24 1   # janela de 24h
+CTX-001 1
+CTX-002 3
+CTX-003 2
+CTX-004 1
+CTX-005 1
+CTX-006 1
+CTX-007 3
+CTX-009 1
+CTX-010 1
+CTX-011 2
+CTX-012 1
+CTX-014 2
+CTX-015 1
+ADV-01 2
+ADV-02 1
+ADV-03 1
+ADV-04 1
+ADV-05 1
+ADV-07 1
+ADV-08 1
+ADV-09 1
+ADV-10 1
+ADV-12 1
+ADV-13 1
+ADV-14 1
+ADV-15 2
+ADV-17 2
+ADV-18 2
+ADV-21 1
