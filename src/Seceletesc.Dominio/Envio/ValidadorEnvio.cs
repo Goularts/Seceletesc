@@ -93,7 +93,7 @@ public static partial class ValidadorEnvio
         }
 
         // 0b. Nenhum dado protegido (CPF, cartão, e-mail...) sai numa resposta automática (invariantes 11 e 23).
-        if (DadosProtegidos.DetectorDadosProtegidos.Mascarar(rascunho.Texto).Ocorrencias.Count > 0)
+        if (ContemDadoProtegido(rascunho.Texto))
         {
             return ResultadoValidacao.Bloquear(MotivoBloqueio.DadoProtegidoNaResposta);
         }
@@ -144,8 +144,19 @@ public static partial class ValidadorEnvio
             fontes.Add(fonte);
         }
 
-        var texto = Normalizacao.ParaComparacao(rascunho.Texto);
         var conteudoFontes = string.Join("\n", fontes.Select(f => Normalizacao.ParaComparacao(f.Conteudo)));
+        return ValidarPadroesEValores(rascunho.Texto, ctx.Politica, conteudoFontes);
+    }
+
+    private static bool ContemDadoProtegido(string texto) => DadosProtegidos.DetectorDadosProtegidos.Mascarar(texto).Ocorrencias.Count > 0;
+
+    /// <summary>
+    /// Regras de conteúdo 5, 6 e 4: padrões proibidos, telefone, valores e termos de compromisso. Números e termos
+    /// precisam constar no conteúdo das fontes (já normalizado); sem fonte, qualquer número ou compromisso bloqueia.
+    /// </summary>
+    private static ResultadoValidacao ValidarPadroesEValores(string original, PoliticaTenant politica, string conteudoFontes)
+    {
+        var texto = Normalizacao.ParaComparacao(original);
 
         // 5. Padrões proibidos.
         if (AutodeclaracaoHumana().IsMatch(texto))
@@ -153,7 +164,7 @@ public static partial class ValidadorEnvio
             return ResultadoValidacao.Bloquear(MotivoBloqueio.AutodeclaracaoHumana);
         }
 
-        if (EhMenu(rascunho.Texto, texto))
+        if (EhMenu(original, texto))
         {
             return ResultadoValidacao.Bloquear(MotivoBloqueio.MenuOuOpcoes);
         }
@@ -165,7 +176,7 @@ public static partial class ValidadorEnvio
 
         foreach (Match url in Host().Matches(texto))
         {
-            if (!DominioPermitido(url.Groups["host"].Value, ctx.Politica.DominiosPermitidos))
+            if (!DominioPermitido(url.Groups["host"].Value, politica.DominiosPermitidos))
             {
                 return ResultadoValidacao.Bloquear(MotivoBloqueio.UrlNaoPermitida, url.Groups["host"].Value);
             }
@@ -191,7 +202,7 @@ public static partial class ValidadorEnvio
             return ResultadoValidacao.Bloquear(MotivoBloqueio.ValorSemFonte, extensoSemFonte);
         }
 
-        foreach (var termo in ctx.Politica.TermosCompromisso)
+        foreach (var termo in politica.TermosCompromisso)
         {
             var t = Normalizacao.ParaComparacao(termo);
             if (t.Length > 0 && ContemTermo(texto, t) && !ContemTermo(conteudoFontes, t))
@@ -205,7 +216,8 @@ public static partial class ValidadorEnvio
 
     /// <summary>
     /// Caminho próprio do aviso de transferência: texto fixo da política, só em TransferenciaPendente
-    /// com a versão esperada. Se o humano já assumiu, não sai.
+    /// com a versão esperada. Se o humano já assumiu, não sai. O texto passa pelas mesmas regras de conteúdo
+    /// de uma resposta automática (operacao-chatbot.md, seção 3), sem fonte.
     /// </summary>
     public static ResultadoValidacao ValidarAvisoTransferencia(Conversa conversa, long versaoEsperada, PoliticaTenant politica)
     {
@@ -222,7 +234,36 @@ public static partial class ValidadorEnvio
             return ResultadoValidacao.Bloquear(MotivoBloqueio.EstadoMudou);
         }
 
-        return ResultadoValidacao.Aprovar();
+        return ValidarTextoFixo(politica.TextoAvisoTransferencia, politica);
+    }
+
+    /// <summary>
+    /// Texto fixo enviado automaticamente sem fonte (aviso de transferência). Mesmas regras de conteúdo de uma
+    /// resposta automática; como não há fonte, qualquer número, prazo ou termo de compromisso bloqueia
+    /// (decisão 7: o aviso não promete prazo nem disponibilidade). Usado também ao publicar a política.
+    /// </summary>
+    public static ResultadoValidacao ValidarTextoFixo(string texto, PoliticaTenant politica)
+    {
+        ArgumentNullException.ThrowIfNull(texto);
+        ArgumentNullException.ThrowIfNull(politica);
+        try
+        {
+            if (!Normalizacao.CaracteresPermitidos(texto, out var suspeito))
+            {
+                return ResultadoValidacao.Bloquear(MotivoBloqueio.CaracterNaoPermitido, suspeito);
+            }
+
+            if (ContemDadoProtegido(texto))
+            {
+                return ResultadoValidacao.Bloquear(MotivoBloqueio.DadoProtegidoNaResposta);
+            }
+
+            return ValidarPadroesEValores(texto, politica, string.Empty);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return ResultadoValidacao.Bloquear(MotivoBloqueio.TempoEsgotado);
+        }
     }
 
     /// <summary>

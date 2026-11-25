@@ -81,7 +81,8 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
 
                 // A resposta não sairá: a automação é interrompida e a supervisão acionada (invariantes 3 e 7).
                 // Se o motivo é a intervenção humana, a conversa já está com o humano.
-                if (item.Tipo == "resposta" && motivo != MotivoEstadoMudou)
+                // Mensagem humana que não sai (vencida, fora da janela) também: o humano pode achar que respondeu.
+                if (item.Tipo is null or "resposta" or TipoHumana && motivo != MotivoEstadoMudou)
                 {
                     await TransferirParaSupervisaoAsync(c, tx, conversa.Id, "envio_cancelado: " + motivo, t).ConfigureAwait(false);
                 }
@@ -121,7 +122,7 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
                     var confirmada = await AtualizarAsync(c, tx, outboxId, "enviada", null, resultado.Wamid, null, false, t, exigirStatus: "enviando").ConfigureAwait(false);
                     await RepositorioNucleo.InserirMensagemAsync(c, tx, Guid.NewGuid(), tenantId, envio.ConversaId, "saida", envio.Texto, resultado.Wamid, relogio.GetUtcNow(), t).ConfigureAwait(false);
                     await RepositorioNucleo.InserirEventoAsync(c, tx, tenantId, envio.ConversaId, confirmada ? "mensagem_enviada" : "mensagem_enviada_apos_incerta",
-                        new { outbox = outboxId, decisao = envio.DecisaoId }, t).ConfigureAwait(false);
+                        new { outbox = outboxId, decisao = envio.DecisaoId, autor = envio.AutorId }, t).ConfigureAwait(false);
                     return ResultadoCiclo.Enviada;
                 case SituacaoEnvio.NaoEnviada:
                     // Com certeza não saiu: volta a "pendente" e será revalidada por completo na próxima reserva.
@@ -144,13 +145,27 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
 
     private const string MotivoForaDaJanela = "fora da janela de 24h";
     private const string MotivoEstadoMudou = "estado da conversa mudou";
+    private const string TipoHumana = "humana";
 
     private static async Task<string?> MotivoParaCancelarAsync(
         NpgsqlConnection c, NpgsqlTransaction tx, Item item, Conversa conversa, Dominio.Politicas.PoliticaTenant? politica, DateTimeOffset agora, CancellationToken ct)
     {
+        // Falha fechado: mensagem automática cuja decisão não aparece não é tratada como humana nem enviada.
+        if (item.Tipo is null)
+        {
+            return "decisão da mensagem não encontrada";
+        }
+
         if (agora >= item.ExpiraEm)
         {
-            return "mensagem automática vencida";
+            return item.Tipo == TipoHumana ? "mensagem humana vencida" : "mensagem automática vencida";
+        }
+
+        // Mensagem humana: escrita pela supervisão, que tem a palavra final. Sai mesmo que a conversa já tenha sido
+        // liberada logo depois (responder e liberar). Só a janela de 24h e a validade da mensagem se aplicam.
+        if (item.Tipo == TipoHumana)
+        {
+            return conversa.DentroDaJanela24h(agora) ? null : MotivoForaDaJanela;
         }
 
         if (politica is null)
@@ -196,9 +211,12 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
     private static async Task<Item?> LerItemComTravaAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid outboxId, CancellationToken ct)
     {
         await using var cmd = RepositorioNucleo.Cmd(c, tx, """
-            select o.conversa_id, o.decisao_id, o.texto, o.status, o.expira_em, d.tipo, d.versao_estado, d.fontes_citadas::text, cl.wa_id
+            select o.conversa_id, o.decisao_id, o.texto, o.status, o.expira_em,
+                   case when o.decisao_id is null and o.autor_id is not null then 'humana' else d.tipo end,
+                   coalesce(d.versao_estado, 0),
+                   coalesce(d.fontes_citadas::text, '[]'), cl.wa_id, o.autor_id
               from outbox o
-              join decisoes_envio d on d.id = o.decisao_id
+              left join decisoes_envio d on d.id = o.decisao_id
               join conversas cv on cv.id = o.conversa_id
               join clientes cl on cl.id = cv.cliente_id
              where o.id = @id
@@ -211,8 +229,8 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
             return null;
         }
 
-        return new Item(r.GetGuid(0), r.GetGuid(1), r.GetString(2), r.GetString(3), r.GetFieldValue<DateTimeOffset>(4),
-            r.GetString(5), r.GetInt64(6), RepositorioNucleo.LerChavesJson(r.GetString(7)), r.GetString(8));
+        return new Item(r.GetGuid(0), r.IsDBNull(1) ? null : r.GetGuid(1), r.GetString(2), r.GetString(3), r.GetFieldValue<DateTimeOffset>(4),
+            r.IsDBNull(5) ? null : r.GetString(5), r.GetInt64(6), RepositorioNucleo.LerChavesJson(r.GetString(7)), r.GetString(8), r.IsDBNull(9) ? null : r.GetGuid(9));
     }
 
     private static async Task<bool> AtualizarAsync(
@@ -250,6 +268,6 @@ public sealed class ProcessadorEnvio(NpgsqlDataSource dataSourceWorker, IGateway
     }
 
     private sealed record Item(
-        Guid ConversaId, Guid DecisaoId, string Texto, string Status, DateTimeOffset ExpiraEm,
-        string Tipo, long VersaoDecisao, List<ChaveFonte> FontesCitadas, string WaIdCliente);
+        Guid ConversaId, Guid? DecisaoId, string Texto, string Status, DateTimeOffset ExpiraEm,
+        string? Tipo, long VersaoDecisao, List<ChaveFonte> FontesCitadas, string WaIdCliente, Guid? AutorId);
 }

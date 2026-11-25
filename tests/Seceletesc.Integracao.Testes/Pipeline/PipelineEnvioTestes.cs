@@ -365,6 +365,25 @@ public sealed class PipelineEnvioTestes(BancoFixture banco)
     }
 
     [Fact]
+    [Trait("Regra", "INV-6")]
+    public async Task Aviso_de_transferencia_gravado_com_prazo_nao_e_enviado()
+    {
+        // Revisão da F2 (G1): mesmo que a política seja gravada por fora da API, o aviso passa pela validação.
+        await using var amb = await AmbientePipeline.CriarAsync(banco, p => p.Aviso = "Retornamos em 10 minutos.");
+        await amb.ConhecimentoAsync("horario", Horario);
+        var motor = new MotorFalso(ctx => Task.FromResult(MotorFalso.Rascunho(ctx, "Está garantido para amanhã, pode vir.", "horario")));
+
+        var r = await amb.Orquestrador(motor).ProcessarAsync(amb.Mensagem("Tem vaga amanhã?"));
+        var ciclo = await amb.Worker().ProcessarProximoAsync();
+
+        Assert.Equal(ResultadoProcessamento.Transferida, r);
+        Assert.Equal(ResultadoCiclo.FilaVazia, ciclo);
+        Assert.Empty(amb.Gateway.Enviadas);
+        Assert.Equal("ValorSemFonte", await amb.ConsultarAsync<string>("select motivo from decisoes_envio where tenant_id = @tenant and tipo = 'aviso_transferencia'"));
+        Assert.Equal("TransferenciaPendente", await amb.EstadoConversaAsync());
+    }
+
+    [Fact]
     [Trait("Regra", "INV-2")]
     public async Task Sem_politica_definida_a_IA_nao_responde()
     {

@@ -8,7 +8,7 @@ namespace Seceletesc.Integracao.Testes;
 /// PostgreSQL real em container, montado como em produção:
 /// o administrador (superusuário do container) só provisiona os papéis e semeia dados de teste;
 /// as migrações rodam com seceletesc_dono (sem superusuário e sem BYPASSRLS);
-/// os testes usam usuários de login nos papéis seceletesc_app e seceletesc_worker.
+/// os testes usam usuários de login nos papéis seceletesc_app, seceletesc_worker e seceletesc_supervisao.
 /// Superusuário ignora RLS, por isso nenhum teste de isolamento usa o administrador.
 /// </summary>
 public sealed class BancoFixture : IAsyncLifetime
@@ -42,6 +42,7 @@ public sealed class BancoFixture : IAsyncLifetime
             alter role seceletesc_dono password '{{SenhaTeste}}';
             create role app_teste login password '{{SenhaTeste}}' in role seceletesc_app;
             create role worker_teste login password '{{SenhaTeste}}' in role seceletesc_worker;
+            create role supervisao_teste login password '{{SenhaTeste}}' in role seceletesc_supervisao;
             """);
 
         await Migrador.AplicarAsync(ConnectionStringDono);
@@ -87,7 +88,7 @@ public sealed class BancoFixture : IAsyncLifetime
         await _container.DisposeAsync();
     }
 
-    private string ConnectionString(string usuario) =>
+    public string ConnectionString(string usuario) =>
         new NpgsqlConnectionStringBuilder(ConnectionStringAdmin) { Username = usuario, Password = SenhaTeste }.ConnectionString;
 
     private async Task ExecutarComoAdminAsync(string sql)

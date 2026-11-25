@@ -192,6 +192,14 @@ Limite assumido: pertinência fina e tom são julgamento do modelo. Esse risco �
 
 - O tenant da requisição vem do usuário autenticado e é aplicado via `SET LOCAL`. Toda operação (assumir, responder, orientar, liberar, aprovar) confere que a conversa ou o item pertence a esse tenant.
 - Testes de acesso direto por id (IDOR) entre empresas.
+- **Autenticação de desenvolvimento (F2):** chave de API por usuário (256 bits aleatórios; o banco guarda só o SHA-256), criada por linha de comando com a conexão do dono. A busca pela chave é feita por uma função `SECURITY DEFINER` mínima, e a tabela de usuários não tem acesso direto. Autenticação de produção, papéis humanos e quem vê dados protegidos continuam pendentes.
+- **Assumir** vale de qualquer estado. **Liberar** exige a conversa em `Humano` e a versão que o humano viu: se outro humano ou o pipeline mudou a conversa, a liberação é recusada (409). Também é recusada enquanto houver resposta humana na fila, para a IA não responder sem ela e fora de ordem.
+- **Permissões da supervisão na conversa:** só `estado`, `versao_estado` e `liberada_em`. O trigger exige `liberada_em` novo na volta ao automático. A supervisão não consegue mexer na última mensagem do cliente, que define a janela de 24h.
+- **Autenticação antes de ler o corpo:** um middleware confere a chave antes do endpoint; corpo limitado a 64 KB. Falhas são registradas sem a chave.
+- **Resposta humana:** entra no outbox sem decisão e com autor. O trigger só aceita essa mensagem vinda do papel de supervisão, com autor ativo da mesma empresa, validade curta e a conversa em `Humano`. O worker respeita a janela de 24h e a validade (10 min); se ela não sair, a supervisão é acionada. A API recusa texto com dado protegido (ele não fica guardado em claro) e texto fora da janela (retomada pelo celular).
+- **Orientação interna:** vira item REV sem classificação, com escopo neste atendimento e origem no usuário. Não muda o estado: a IA continua muda até a liberação. Texto ou assunto com dado protegido é recusado (derivado da invariante 23: a orientação pode virar fonte depois de aprovada).
+- **Política:** cada publicação cria uma versão nova (imutável), exige a versão vigente que o humano viu e grava a forma canônica (campos desconhecidos são descartados; classificação só pelo nome exato). O aviso de transferência passa pelas regras de conteúdo do validador, sem fonte (nenhum prazo, valor ou compromisso), na publicação e de novo ao enfileirar. Domínio permitido precisa ser um domínio completo.
+- **Requisito de implantação:** HTTPS obrigatório fora de desenvolvimento (a chave vai no cabeçalho); limite de taxa e credenciais distintas por papel ficam com a autenticação de produção.
 
 ### 4.10 Segurança do repositório e dados
 
@@ -234,6 +242,7 @@ F0 a F3 não dependem de decisão pendente nem de infraestrutura externa. Todas 
 
 | Fase | Situação |
 |---|---|
+| F2 Supervisão (API) | implementada: autenticação de desenvolvimento, assumir, liberar, responder, orientar, política; travas no banco para a mensagem humana. Revisão em revisoes/2026-11-25-f2.md |
 | F1b Pipeline | implementada: orquestrador, worker, criptografia, travas do banco. Revisão em revisoes/2026-11-25-f1b.md |
 | F1a Domínio | implementada: estados, validador, elegibilidade, rascunho estrito, dados protegidos. Revisão em revisoes/2026-11-25-f1a.md |
 | F0 Fundação | implementada (PR #2): papéis sem superusuário, RLS forçado com `SET LOCAL`, histórico append-only com carimbo do banco, migrador com checksum, CI endurecido, contagem de testes por regra |
@@ -260,7 +269,7 @@ Ver `docs/project-context.md`. Afetam diretamente:
 - F1: categorias de dados protegidos (padrão técnico definido; o Victor pode ampliar).
 - F4: coexistência do número (app + API).
 - F5: provedor de IA (desbloqueada: dados delimitados).
-- F2, F3 e F6: autenticação, usuários e papéis.
+- F3 e F6: autenticação de produção, usuários e papéis (a F2 usa chave de API de desenvolvimento).
 - F7: assuntos autônomos e textos fixos.
 - Lacunas com padrão conservador já definido no plano (o Victor pode mudar):
   - retomada não responde mensagens anteriores à liberação;

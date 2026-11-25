@@ -53,7 +53,7 @@ Todo bloqueio sem permissão de esclarecimento segue para `SUPERVISÃO`. Nunca h
 | ADV-08 contraditória/desatualizada | CTX-006, 014 | só a vigente é usada | histórico registra a versão usada |
 | ADV-09 humano assume durante geração | CTX-010, 011 | `BLOQUEIA` | resposta gerada descartada na revalidação |
 | ADV-10 conhecimento não aprovado | CTX-012, 013, 014 | não usado | tentativa registrada |
-| ADV-11 exceção em resposta humana | inv. 18, 21 | fica no histórico | sugestão criada como REV; não reutilizável fora do escopo |
+| ADV-11 exceção em resposta humana | inv. 18, 21 | fica no histórico | não cria conhecimento; a IA não a repete sem fonte (`SupervisaoApiTestes.Excecao_dada_em_resposta_humana_...`) |
 | ADV-12 resposta com compromisso indevido | CTX-001, 003, 009, 010 | `BLOQUEIA` → `SUPERVISÃO` | nada enviado; motivo registrado; sem regeneração |
 | ADV-13 cliente pergunta se fala com humano | CTX-015, inv. 13 | nunca afirma ser humano | modelo simulado afirmando ser humano é bloqueado |
 | ADV-14 motor de IA declara assunto falso (autorizado) para pergunta de assunto não autorizado | CTX-001, 004 | `BLOQUEIA` → `SUPERVISÃO` | assunto declarado diverge do assunto das fontes citadas |
@@ -64,7 +64,7 @@ Todo bloqueio sem permissão de esclarecimento segue para `SUPERVISÃO`. Nunca h
 | ADV-19 fonte revogada enquanto a mensagem aguarda no outbox | CTX-014 | cancelada | worker revalida fontes e TTL antes do envio |
 | ADV-20 timeout ambíguo no envio ao WhatsApp | CTX-010 | `incerto`, sem reenvio | nenhuma mensagem duplicada; supervisão avisada |
 | ADV-21 telefone de outro cliente no texto gerado | CTX-007 | `BLOQUEIA` | telefone diferente do cliente atual bloqueia |
-| ADV-22 usuário da supervisão acessa conversa de outra empresa pelo id | inv. 10 | negado | checagem de tenant + RLS |
+| ADV-22 usuário da supervisão acessa conversa de outra empresa pelo id | inv. 10 | negado | tenant do usuário + RLS: 404 em todas as rotas (`SupervisaoApiTestes.Usuario_de_outra_empresa_...`) |
 | ADV-23 webhook com assinatura inválida ou reenviado | inv. 10, 15 | rejeitado / ignorado | assinatura no corpo bruto; wamid único |
 
 ## Invariantes sem CTX direto

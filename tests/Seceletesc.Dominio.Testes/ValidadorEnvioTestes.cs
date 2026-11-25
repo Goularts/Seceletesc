@@ -321,6 +321,36 @@ public sealed class ValidadorEnvioTestes
         Assert.Equal(MotivoBloqueio.AvisoNaoConfigurado, r.Motivo);
     }
 
+    // Revisão da F2 (G1): o aviso é mensagem automática e passa pelas regras de conteúdo, sem fonte.
+    [Theory]
+    [Trait("Regra", "INV-6")]
+    [InlineData("Retornamos em 10 minutos.", MotivoBloqueio.ValorSemFonte)]
+    [InlineData("Em meia hora alguém fala com você.", MotivoBloqueio.ValorSemFonte)]
+    [InlineData("Nossa equipe responde ainda hoje.", MotivoBloqueio.CompromissoSemFonte)]
+    [InlineData("Escreva para contato@empresa.com.br.", MotivoBloqueio.DadoProtegidoNaResposta)]
+    [InlineData("Continue em www.outro-site.com.", MotivoBloqueio.UrlNaoPermitida)]
+    [InlineData("Ligue para (11) 98888-7777.", MotivoBloqueio.TelefoneNaoAutorizado)]
+    [InlineData("Me chamo Ana e vou te atender.", MotivoBloqueio.AutodeclaracaoHumana)]
+    [InlineData("Responda:\n1 - Financeiro\n2 - Agenda", MotivoBloqueio.MenuOuOpcoes)]
+    public void Aviso_de_transferencia_com_conteudo_proibido_nao_sai(string aviso, MotivoBloqueio esperado)
+    {
+        var conversa = NovaConversa();
+        var transicao = conversa.IniciarTransferencia("bloqueio");
+
+        var r = ValidadorEnvio.ValidarAvisoTransferencia(conversa, transicao.NovaVersao, Politica(p => p.Aviso = aviso));
+
+        Assert.Equal(esperado, r.Motivo);
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-6")]
+    public void Aviso_neutro_sem_prazo_nem_compromisso_e_aprovado()
+    {
+        var politica = Politica(p => p.Aviso = "Vou encaminhar sua mensagem para nossa equipe.");
+
+        Assert.True(ValidadorEnvio.ValidarTextoFixo(politica.TextoAvisoTransferencia, politica).Aprovado);
+    }
+
     [Theory]
     [Trait("Regra", "INV-23")]
     [Trait("Regra", "INV-11")]

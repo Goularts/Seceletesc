@@ -42,6 +42,9 @@ Resumo numerado das regras A e B: `docs/business-rules/invariants.md`.
 15. O Ruflo coordena agentes de desenvolvimento, revisão, testes e segurança. Os agentes têm autonomia técnica; o Ruflo não substitui os controles do backend.
 16. Regras A e B protegidas por testes automatizados (inclusive adversariais, verificando a decisão do backend), CI e controles de repositório.
 17. Repositório público no GitHub (`Goularts/Seceletesc`); CI no GitHub Actions. Sem aprovação manual de PR nem conta separada para agentes neste momento.
+18. Escopo inicial (2026-11-25): o chatbot funciona como **secretária de atendimento**, não como agente comercial. Não negocia nem trata propostas; conhecimento com escopo "proposta" continua fora de uso.
+19. Dados protegidos em respostas automáticas (2026-11-25): mantém-se o bloqueio. Resposta automática que contenha CPF, cartão, e-mail etc. não sai; se o atendimento precisar desse dado, a conversa espera um humano. Na entrada, o dado enviado pelo cliente não é guardado em claro: fica cifrado e fora do alcance da IA. Na API de supervisão, resposta humana com dado protegido também é recusada (o humano trata pelo celular).
+20. Termos de compromisso (2026-11-25): a lista padrão fica como está. Ela só restringe (na dúvida, transfere) e cada empresa a ajusta pela política, na API de supervisão. A calibragem é feita no piloto, olhando os bloqueios por motivo.
 
 ## Etapa atual
 
@@ -57,13 +60,12 @@ Não presumir. Decisões puramente técnicas (estrutura da solução, estratégi
 - Quais fontes, além do conhecimento aprovado, são autorizadas (ex.: sistemas da empresa).
 - Escopo de atendimento autorizado inicial (assuntos da primeira empresa).
 - Política de retenção, auditoria e LGPD.
-- Autenticação e usuários da API e do painel de supervisão.
+- Autenticação e usuários da API e do painel de supervisão. (Em desenvolvimento: chave de API por usuário, criada por linha de comando. Produção: a definir.)
 - Retomada após liberação: a IA responde mensagens recebidas durante o controle humano? (Padrão no plano: não.)
 - Mensagens que não são texto (mídia, áudio, reação, edição): a IA trata? (Padrão no plano: vão para supervisão.)
 - Esclarecimento: em quais assuntos é permitido e como é gerado? (Padrão no plano: desligado.)
 - Cliente identificado pelo telefone: como tratar número compartilhado ou reciclado?
-- Escopo "proposta": como uma proposta se liga a uma conversa? Até decidir, conhecimento com escopo de proposta não é usado pela IA.
-- Dados protegidos em respostas automáticas: hoje toda resposta com CPF, cartão, e-mail etc. é bloqueada. Algum desses dados (ex.: e-mail de contato da empresa) precisa poder sair?
-- Termos de compromisso: validar a lista padrão (PoliticaTenant.TermosCompromissoPadrao) antes do piloto. Ela só restringe.
 - Categorias de dados protegidos (criptografados e ocultos da IA). Padrão técnico inicial: CPF, CNPJ, RG, cartão de pagamento, e-mail, CEP/endereço. O Victor pode ampliar.
 - Quem pode ver dados protegidos no painel.
+- Quem pode publicar a política e o que ela pode afrouxar (revisão da F2). Hoje qualquer usuário da supervisão publica, e a política pode liberar NEG, EXC, INT, RES ou CLI em resposta automática, ligar o envio de conhecimento de cliente ao modelo e reduzir os termos de compromisso. Sob a decisão 18 (secretária), NEG e EXC devem poder ser autônomos? Os termos padrão devem ser um piso?
+- Marcação de retomada humana: quando termina? Hoje ela nunca é limpa (nem ao liberar).
