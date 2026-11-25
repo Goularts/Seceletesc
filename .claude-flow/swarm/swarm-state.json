@@ -1,0 +1,23 @@
+{
+  "swarms": {
+    "swarm-1795565808083-8bujzt": {
+      "swarmId": "swarm-1795565808083-8bujzt",
+      "topology": "star",
+      "maxAgents": 3,
+      "status": "running",
+      "agents": [],
+      "tasks": [],
+      "config": {
+        "topology": "star",
+        "maxAgents": 3,
+        "strategy": "specialized",
+        "communicationProtocol": "message-bus",
+        "autoScaling": true,
+        "consensusMechanism": "majority"
+      },
+      "createdAt": "2026-11-25T00:16:48.083Z",
+      "updatedAt": "2026-11-25T00:16:48.083Z"
+    }
+  },
+  "version": "3.0.0"
+}

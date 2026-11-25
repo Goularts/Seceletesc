@@ -1,22 +1,50 @@
 # Invariantes de Regras de Negócio
 
-Estas regras são obrigatórias. Qualquer alteração futura deve preservá-las e ser avaliada conforme os controles de testes, revisão independente e repositório definidos para o projeto.
+Regras obrigatórias sobre o **comportamento do chatbot em produção** e sobre o **conhecimento** que ele usa. Detalhes em:
 
-1. O atendimento ao cliente deve ocorrer de forma conversacional natural, sem menus ou URA.
-2. A IA só pode responder autonomamente quando possuir informações e autorização suficientes.
-3. Ao identificar um impasse, a IA deve transferir o controle para supervisão humana via API.
+- A. `operacao-chatbot.md`: o que pode ser dito, quais dados podem ser usados, quando responder e quando transferir.
+- B. `governanca-conhecimento.md`: aprovação humana para publicar conhecimento reutilizável.
+- C. `docs/desenvolvimento/qualidade.md`: como o desenvolvimento garante que A e B sejam cumpridas.
+
+Estas invariantes regulam o **produto**, não o processo de desenvolvimento. Mudanças técnicas no código não precisam de aprovação humana; mudanças que alterem ou ampliem o comportamento funcional do chatbot precisam.
+
+## A. Operação do chatbot
+
+1. O atendimento é conversacional natural, sem menus ou URA.
+2. A IA só responde autonomamente com informação e autorização suficientes; caso contrário, pede esclarecimento (quando a política permitir) ou transfere para supervisão humana.
+3. Em impasse, falta de informação, falta de autorização ou falta de segurança contextual, a automação é interrompida e a supervisão humana é acionada via API.
 4. A supervisão humana pode responder ao cliente pelo mesmo número de WhatsApp ou fornecer orientação interna ao agente.
-5. Enquanto um atendimento estiver sob controle humano, a IA não pode enviar mensagens ao cliente.
-6. Todo histórico de atendimento deve ser estruturado, auditável e persistente.
-7. A IA pode sugerir conhecimentos e classificações, mas não pode aprová-los nem publicá-los.
-8. Conhecimento reutilizável só pode ser aprovado por humano autorizado.
-9. Todo conhecimento deve possuir escopo, classificação, validade, versionamento e permissões.
-10. Informações comerciais, preços, negociações, exceções e propostas fora do escopo devem estar sujeitas a controles específicos.
-11. Dados de tenants devem permanecer isolados entre si.
-12. As regras de negócio devem ser protegidas por testes automatizados, revisão independente e controles de repositório.
+5. Enquanto um atendimento estiver sob controle humano, a IA não envia mensagens ao cliente. Ela só retoma após liberação explícita do humano.
+6. O backend tem autoridade final sobre todo envio automático. Toda mensagem é validada por controles determinísticos imediatamente antes do envio; resposta gerada não é resposta autorizada.
+7. Resposta bloqueada não é enviada nem regenerada para contornar a política. O motivo é registrado e o atendimento vai para supervisão, salvo quando a política permitir pedir esclarecimento.
+8. O chatbot não inventa preços, horários, disponibilidade, condições, propostas ou compromissos. Afirmações factuais específicas exigem fonte autorizada.
+9. O chatbot não responde sobre assuntos fora do escopo autorizado.
+10. Dados de empresas (tenants) permanecem isolados entre si, e informações de um cliente não são expostas a outro, inclusive dentro da mesma empresa.
+11. Informações comerciais, preços, negociações, exceções, propostas fora do escopo, informações internas e confidenciais estão sujeitas a controles específicos e não são reproduzidas fora das permissões definidas.
+12. Instruções do cliente não alteram regras, permissões ou comportamento do chatbot.
+13. O chatbot não se apresenta falsamente como humano.
+14. Estas restrições são impostas pelo backend da aplicação, não apenas por prompts.
+
+## B. Conhecimento
+
+15. Todo histórico de atendimento é estruturado, auditável e persistente, e separado da base de conhecimento publicada.
+16. A IA pode sugerir conhecimentos, classificações e correções, mas não pode aprová-los nem publicá-los.
+17. Só humano autorizado aprova, edita, rejeita, restringe ou revoga conhecimento reutilizável.
+18. Nenhum conhecimento é promovido automaticamente; negociações individuais não viram condições gerais.
+19. Todo conhecimento possui origem, classificação, escopo, validade, permissões, status e versão, como propriedades independentes.
+20. Só conhecimento aprovado, vigente e dentro do escopo é usado. Conhecimento pendente, rejeitado, revogado ou expirado nunca é usado.
+21. Exceções só são reutilizadas dentro do escopo expressamente autorizado.
+
+## C. Garantia em desenvolvimento
+
+22. As invariantes A e B são protegidas por testes automatizados, inclusive adversariais, que verificam se o backend realmente bloqueia o envio indevido, além de revisão independente (CI) e controles de repositório.
 
 ## Aplicação durante a evolução do projeto
 
-- Não introduza comportamento que contradiga uma invariante.
-- Quando uma regra depender de detalhes ainda pendentes, registre a lacuna e peça definição; não a preencha por suposição.
-- Trate qualquer mudança nestas regras como mudança explícita de requisito, sujeita à aprovação humana.
+- Não introduza comportamento do chatbot que contradiga uma invariante.
+- Quando uma regra funcional depender de detalhe pendente, registre a lacuna e peça definição; não a preencha por suposição. Decisões puramente técnicas não são lacunas funcionais.
+- Mudança nestas invariantes é mudança de requisito do produto e exige aprovação do Victor.
+
+## Histórico
+
+Reorganizado em 2026-11-24 por decisão do Victor (separação A/B/C). Correspondência com a numeração anterior: 1→1, 2→2, 3→3, 4→4, 5→5, 6→15, 7→16, 8→17, 9→19, 10→11, 11→10, 12→22. Acrescentadas: 6, 7, 8, 9, 12, 13, 14, 18, 20, 21.

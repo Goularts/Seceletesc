@@ -51,104 +51,36 @@ Limitações conhecidas:
 
 - `ruflo@3.80.6` está fixado, mas as dependências de `@claude-flow/cli` usam faixas (`^`). O `npx` pode resolver versões diferentes com o tempo.
 - O servidor MCP anuncia cerca de 394 ferramentas (~78 mil tokens de schema). O Claude Code carrega sob demanda, mas vale monitorar.
-- A memória do Ruflo está em modo `memory` (não persistente). Ver pendência 4.
+- A memória do Ruflo está em modo `memory` (não persistente). Ver pendência 1.
+
+## Governança (revisada em 2026-11-24)
+
+Por decisão do Victor, a aprovação humana vale para **conhecimento e comportamento do chatbot em produção**, não para o desenvolvimento. Os agentes têm autonomia técnica (ver `docs/desenvolvimento/qualidade.md`). Por isso foram descartados: aprovação manual de PR, conta GitHub separada para agentes, hook de pre-commit bloqueando caminhos e caminhos de desenvolvimento protegidos.
 
 ## Permissões do Claude Code (`.claude/settings.json`)
 
-Validado em 2026-11-24 com `claude -p --permission-mode acceptEdits`:
-
 | Ação | Resultado |
 |---|---|
-| Editar `AGENTS.md`, `CLAUDE.md`, `.claude/**`, `.mcp.json` | pede confirmação |
-| Editar `docs/business-rules/**` | negado |
+| Editar `docs/business-rules/**` (regras do chatbot) | pede confirmação |
 | Ler `.env`, `.env.*`, `secrets*` | negado |
+| Demais edições | livres |
 
-Essas regras valem só para as ferramentas de edição e leitura do Claude Code. Um comando de shell ainda consegue alterar arquivos. A proteção efetiva precisa vir do repositório e do CI (abaixo).
+## CODEOWNERS
 
-## Agentes (`.claude/agents/`)
+`.github/CODEOWNERS` cobre só `docs/business-rules/`. Sem branch protection, ele não bloqueia merge: apenas marca o Victor como revisor quando um PR muda regra do chatbot, para dar visibilidade.
 
-| Agente | Ferramentas | Papel |
-|---|---|---|
-| `arquiteto` | Read, Grep, Glob | propõe arquitetura; não edita |
-| `desenvolvedor` | Read, Grep, Glob, Edit, Write, Bash | implementa em etapa autorizada |
-| `testes` | Read, Grep, Glob, Edit, Write, Bash | testes de invariantes e regressão |
-| `seguranca` | Read, Grep, Glob | revisão de segurança; não corrige |
-| `guardiao-regras` | Read, Grep, Glob | confere mudança contra invariantes; bloqueia |
+## CI
 
-Os agentes somente leitura não executam `git diff`; quem os chama deve incluir o diff no pedido. O parecer de um agente não é revisão independente.
+GitHub Actions. Deve existir antes do primeiro merge de código da aplicação, rodando build, testes e testes de regras A/B (incluindo os adversariais). É a revisão independente do desenvolvimento. O workflow será definido no plano técnico, junto com a estrutura .NET.
 
-## Proteções propostas (ainda não aplicadas)
+## Agentes
 
-Revisão independente é feita por humano ou CI.
-
-### 1. CODEOWNERS (`.github/CODEOWNERS`): aplicado
-
-Todos os caminhos protegidos apontam para `@Goularts`. Enquanto não houver branch protection, o arquivo só adiciona o Victor como revisor automático; não bloqueia merge.
-
-### 2. Branch protection na branch principal: adiada
-
-Decisão do Victor: ativar quando houver CI. Proposta: PR obrigatório, status checks do CI obrigatórios, sem push direto e sem force push, regras aplicadas também a administradores.
-
-Problema em aberto (pendência 9): o GitHub não deixa o autor aprovar o próprio PR. Se os agentes fizerem push com a conta do Victor, exigir aprovação de code owner trava todo PR. Alternativas: conta GitHub separada para os agentes, ou exigir só PR + CI verde.
-
-### 3. CI
-
-Depende da pendência 3 (provedor) e da 7 (estrutura .NET). Esqueleto para GitHub Actions:
-
-```yaml
-name: ci
-on: [pull_request]
-jobs:
-  invariantes:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with: { dotnet-version: '<definir>' }
-      - run: dotnet test --filter "Category=Invariante"
-  caminhos-protegidos:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - name: Sinaliza mudança em caminho protegido
-        run: |
-          git diff --name-only origin/${{ github.base_ref }}...HEAD \
-            | grep -E '^(AGENTS\.md|CLAUDE\.md|\.claude/|\.mcp\.json|docs/business-rules/)' \
-            && echo "::warning::PR altera caminho protegido; exige aprovação do code owner" || true
-```
-
-O bloqueio de verdade vem do CODEOWNERS e da branch protection; o job só sinaliza.
-
-### 4. Hook de pre-commit (local)
-
-Bloqueia commit que toca caminho protegido, a menos que `SECELETESC_PERMITIR_PROTEGIDO=1` esteja definido. É só uma barreira local: `git commit --no-verify` contorna.
-
-```sh
-#!/bin/sh
-# .githooks/pre-commit  (ativar com: git config core.hooksPath .githooks)
-protegidos='^(AGENTS\.md|CLAUDE\.md|\.claude/|\.mcp\.json|docs/business-rules/)'
-alterados=$(git diff --cached --name-only | grep -E "$protegidos")
-if [ -n "$alterados" ] && [ "$SECELETESC_PERMITIR_PROTEGIDO" != "1" ]; then
-  echo "Commit bloqueado: caminhos protegidos alterados:"
-  echo "$alterados"
-  echo "Com autorização do Victor, rode no CMD: set SECELETESC_PERMITIR_PROTEGIDO=1"
-  exit 1
-fi
-```
+Ver `docs/desenvolvimento/qualidade.md`. Os agentes somente leitura não executam `git diff`; quem os chama inclui o diff no pedido.
 
 ## Decisões pendentes de ambiente
 
-1. ~~Remote~~: resolvida. GitHub público (`Goularts/Seceletesc`).
-2. ~~Usuários do GitHub no CODEOWNERS~~: resolvida. `@Goularts`.
-3. Provedor de CI.
-4. Nível do Ruflo: manter mínimo? Habilitar memória persistente ou vetorial?
-5. Manter ou remover configuração do Codex neste repositório (hoje não há nenhuma).
-6. Terminal padrão (CMD ou PowerShell).
-7. Estrutura da solução .NET.
-8. Ativar o hook de pre-commit proposto.
-9. Quem aprova PR: conta GitHub separada para os agentes ou só PR + CI (ver seção 2 das proteções). Decidir junto com a branch protection.
+1. Nível do Ruflo: manter mínimo ou habilitar memória persistente/vetorial (avaliar pelo piloto).
+2. Configuração do Codex: não há nenhuma; o Codex lê `AGENTS.md` nativamente.
+3. Terminal padrão: comandos seguem em CMD.
 
-O monitoramento do piloto do Ruflo fica em `docs/setup/ruflo-piloto-qa.md`.
-
-As decisões pendentes de negócio estão em `docs/project-context.md`.
+Piloto do Ruflo: `docs/setup/ruflo-piloto-qa.md`. Pendências funcionais: `docs/project-context.md`.

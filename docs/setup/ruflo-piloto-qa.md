@@ -23,7 +23,7 @@ Uma linha por tarefa concluída na tabela de registro. Preencha logo ao fim da t
 
 | Data | Tarefa | Modo | Agentes usados | Retrabalho | Violação | Bloqueio útil | Falso alarme | Intervenções | Atrito do Ruflo | Observações |
 |---|---|---|---|---|---|---|---|---|---|---|
-| | | | | | | | | | | |
+| 2026-11-24 | Revisão de consistência das regras A/B/C | ruflo | guardiao-regras, arquiteto (em paralelo) | 0 | 0 | 6 (ordem do aviso de transferência inventada; 3 lacunas de teste; regras não verificáveis na matriz; conflitos técnicos de concorrência/cache) | 9 (7 "regras inventadas" que vinham da 1ª especificação, que não foi passada ao guardião; branch `main` inexistente; sugestão de revisão humana contrária à decisão do Victor) | 0 | Ruflo só registrou swarm e tarefa; a revisão foi feita pelos subagentes nativos. Sem ganho mensurável do Ruflo nesta tarefa | Falsos alarmes do guardião vieram de contexto incompleto no pedido: incluir as fontes das decisões nos próximos pedidos |
 
 ## Custos conhecidos do Ruflo (linha de base em 2026-11-24)
 

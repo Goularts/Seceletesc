@@ -1,19 +1,22 @@
 # Instruções para Agentes
 
-Antes de qualquer alteração neste repositório, consulte integralmente:
+Antes de trabalhar neste repositório, leia:
 
 1. `docs/project-context.md`
-2. `docs/business-rules/invariants.md`
+2. `docs/business-rules/invariants.md`, `operacao-chatbot.md` e `governanca-conhecimento.md`
+3. `docs/desenvolvimento/qualidade.md`
 
-Esses documentos são a fonte de contexto e das regras obrigatórias já definidas para o projeto.
+## Duas coisas diferentes
 
-## Regras de trabalho
+- **Desenvolvimento do software: autonomia.** Crie, altere, refatore, organize, teste e decida tecnicamente sem pedir aprovação a cada passo. Siga `docs/desenvolvimento/qualidade.md`.
+- **Comportamento do chatbot e conhecimento: controle rigoroso.** As regras de `docs/business-rules/` são requisitos do produto. Não invente nem amplie comportamento funcional do chatbot; lacunas funcionais vão para "Decisões pendentes" e pedem definição do Victor.
 
-- Não invente requisitos, fluxos, permissões, critérios ou integrações que ainda não tenham sido definidos.
-- Identifique e registre decisões pendentes separadamente; solicite definição quando elas forem necessárias para avançar.
-- Preserve as invariantes de regras de negócio em toda alteração.
-- Não permita que a IA aprove ou publique conhecimento reutilizável.
-- Não permita que a IA envie mensagens ao cliente durante atendimento sob controle humano.
-- Preserve o isolamento obrigatório de dados por tenant.
-- Ao implementar regras de negócio em etapa autorizada, proteja-as com testes automatizados e submeta-as à revisão independente e aos controles de repositório aplicáveis.
-- Nesta etapa de preparação, não implemente a aplicação e não instale dependências sem aprovação explícita do usuário.
+## Regras
+
+- Implemente as restrições do chatbot como controles do backend (determinísticos sempre que possível), nunca só em prompts.
+- Nenhum caminho de código pode enviar mensagem ao cliente sem a validação do backend imediatamente antes do envio.
+- Nenhum caminho de código pode publicar conhecimento sem aprovação humana explícita.
+- Preserve o isolamento entre empresas e entre clientes.
+- Proteja as regras A e B com testes que verificam a decisão do backend. Não enfraqueça um teste de regra para fazer uma implementação passar.
+- Peça confirmação só para: operações destrutivas, exposição de dados, infraestrutura externa ou configuração global, e mudanças no comportamento funcional do chatbot.
+- Etapa atual: preparação. Apresente um plano técnico consolidado antes de implementar funcionalidades.
