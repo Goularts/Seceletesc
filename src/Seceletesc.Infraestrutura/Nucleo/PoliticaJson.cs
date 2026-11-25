@@ -34,7 +34,7 @@ public static class PoliticaJson
             AssuntosAutonomos = new HashSet<string>(dto.AssuntosAutonomos ?? []),
             AssuntosExigemHumano = new HashSet<string>(dto.AssuntosExigemHumano ?? []),
             ClassificacoesPermitidasRespostaAutomatica = dto.ClassificacoesPermitidas is { } c
-                ? new HashSet<Classificacao>(c.Select(Enum.Parse<Classificacao>))
+                ? new HashSet<Classificacao>(c.Select(LerClassificacao))
                 : padrao.ClassificacoesPermitidasRespostaAutomatica,
             TextoAvisoTransferencia = dto.TextoAvisoTransferencia ?? string.Empty,
             TermosCompromisso = dto.TermosCompromisso ?? padrao.TermosCompromisso,
@@ -45,6 +45,15 @@ public static class PoliticaJson
                 : padrao.ValidadeMensagemAutomatica,
         };
     }
+
+    /// <summary>
+    /// Só o nome exato de uma classificação. Enum.Parse aceitaria números ("99") e combinações ("Publico, Interno"),
+    /// que viram outra classificação ou um valor inexistente.
+    /// </summary>
+    private static Classificacao LerClassificacao(string nome) =>
+        Enum.GetNames<Classificacao>().Contains(nome, StringComparer.Ordinal)
+            ? Enum.Parse<Classificacao>(nome)
+            : throw new FormatException($"Classificação desconhecida: '{nome}'.");
 
     private sealed class Dto
     {

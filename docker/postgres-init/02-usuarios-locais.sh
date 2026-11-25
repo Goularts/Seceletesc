@@ -6,4 +6,5 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
 alter role seceletesc_dono password :'senha';
 create role app_local login password :'senha' in role seceletesc_app;
 create role worker_local login password :'senha' in role seceletesc_worker;
+create role supervisao_local login password :'senha' in role seceletesc_supervisao;
 SQL

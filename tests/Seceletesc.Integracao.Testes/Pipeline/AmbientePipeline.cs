@@ -8,6 +8,7 @@ using Seceletesc.Dominio.Contratos;
 using Seceletesc.Dominio.Politicas;
 using Seceletesc.Infraestrutura.Criptografia;
 using Seceletesc.Infraestrutura.Nucleo;
+using Seceletesc.Infraestrutura.Supervisao;
 
 namespace Seceletesc.Integracao.Testes.Pipeline;
 
@@ -77,13 +78,17 @@ internal sealed class AmbientePipeline : IAsyncDisposable
     private readonly BancoFixture _banco;
     private readonly CifradorDadosProtegidos _cifrador;
 
-    private AmbientePipeline(BancoFixture banco, Guid tenantId)
+    private AmbientePipeline(BancoFixture banco, Guid tenantId, Guid supervisorId, string chaveSupervisor)
     {
         _banco = banco;
         TenantId = tenantId;
         _cifrador = new CifradorDadosProtegidos(ChavesRsa.Value.Publica);
         App = banco.CriarDataSource("app_teste", maxPool: 4);
         WorkerDs = banco.CriarDataSource("worker_teste", maxPool: 4);
+        SupervisaoDs = banco.CriarDataSource("supervisao_teste", maxPool: 4);
+        Supervisor = new UsuarioSupervisao(supervisorId, tenantId);
+        ChaveSupervisor = chaveSupervisor;
+        Supervisao = new ServicoSupervisao(SupervisaoDs, Relogio);
     }
 
     public Guid TenantId { get; }
@@ -95,6 +100,18 @@ internal sealed class AmbientePipeline : IAsyncDisposable
     public NpgsqlDataSource App { get; }
 
     public NpgsqlDataSource WorkerDs { get; }
+
+    /// <summary>Papel real da supervisão humana (seceletesc_supervisao), não o administrador.</summary>
+    public NpgsqlDataSource SupervisaoDs { get; }
+
+    public ServicoSupervisao Supervisao { get; }
+
+    public UsuarioSupervisao Supervisor { get; }
+
+    /// <summary>Chave de API do supervisor deste tenant.</summary>
+    public string ChaveSupervisor { get; }
+
+    public BancoFixture Banco => _banco;
 
     public static string ChavePrivadaPem => ChavesRsa.Value.Privada;
 
@@ -134,7 +151,17 @@ internal sealed class AmbientePipeline : IAsyncDisposable
             await pol.ExecuteNonQueryAsync();
         }
 
-        return new AmbientePipeline(banco, tenantId);
+        var supervisorId = Guid.NewGuid();
+        var chave = ServicoSupervisao.GerarChave();
+        await using (var sup = new NpgsqlCommand("insert into usuarios_supervisao (id, tenant_id, nome, chave_sha256) values (@id, @t, 'Supervisor de teste', @h)", c))
+        {
+            sup.Parameters.AddWithValue("id", supervisorId);
+            sup.Parameters.AddWithValue("t", tenantId);
+            sup.Parameters.AddWithValue("h", ServicoSupervisao.HashChave(chave));
+            await sup.ExecuteNonQueryAsync();
+        }
+
+        return new AmbientePipeline(banco, tenantId, supervisorId, chave);
     }
 
     public ProcessadorMensagemRecebida Orquestrador(IMotorIA motor) => new(App, motor, _cifrador, Relogio);
@@ -174,32 +201,23 @@ internal sealed class AmbientePipeline : IAsyncDisposable
     public Task RevogarAsync(ChaveFonte fonte) =>
         AdminAsync("update itens_conhecimento set status = 'Revogado' where id = @x", fonte.ItemId);
 
-    /// <summary>Humano assume a conversa: mesma trava e incremento de versão que a API de supervisão usará (F2).</summary>
+    public async Task<Guid> ConversaIdAsync() =>
+        (await ConsultarAsync<Guid?>("select id from conversas where tenant_id = @tenant")) ?? throw new InvalidOperationException("Sem conversa.");
+
+    public Task<long> VersaoConversaAsync() => ConsultarAsync<long>("select versao_estado from conversas where tenant_id = @tenant");
+
+    /// <summary>Humano assume a conversa pela supervisão (papel seceletesc_supervisao).</summary>
     public async Task AssumirAsync()
     {
-        await using var c = new NpgsqlConnection(_banco.ConnectionStringAdmin);
-        await c.OpenAsync();
-        await using var cmd = new NpgsqlCommand("""
-            update conversas set estado = 'Humano', versao_estado = versao_estado + 1
-             where tenant_id = @t and cliente_id = (select id from clientes where tenant_id = @t and wa_id = @w)
-            """, c);
-        cmd.Parameters.AddWithValue("t", TenantId);
-        cmd.Parameters.AddWithValue("w", WaCliente);
-        await cmd.ExecuteNonQueryAsync();
+        var r = await Supervisao.AssumirAsync(Supervisor, await ConversaIdAsync());
+        Assert.Equal(SituacaoOperacao.Ok, r.Situacao);
     }
 
-    /// <summary>Humano libera a conversa de volta para a IA (incrementa a versão e registra a liberação).</summary>
+    /// <summary>Humano libera a conversa de volta para a IA pela supervisão.</summary>
     public async Task LiberarAsync()
     {
-        await using var c = new NpgsqlConnection(_banco.ConnectionStringAdmin);
-        await c.OpenAsync();
-        await using var cmd = new NpgsqlCommand("""
-            update conversas set estado = 'Automatico', versao_estado = versao_estado + 1, liberada_em = @agora
-             where tenant_id = @t and estado = 'Humano'
-            """, c);
-        cmd.Parameters.AddWithValue("t", TenantId);
-        cmd.Parameters.AddWithValue("agora", Relogio.Agora);
-        await cmd.ExecuteNonQueryAsync();
+        var r = await Supervisao.LiberarAsync(Supervisor, await ConversaIdAsync(), await VersaoConversaAsync());
+        Assert.Equal(SituacaoOperacao.Ok, r.Situacao);
     }
 
     public async Task<T?> ConsultarAsync<T>(string sql)
@@ -220,6 +238,7 @@ internal sealed class AmbientePipeline : IAsyncDisposable
         _cifrador.Dispose();
         await App.DisposeAsync();
         await WorkerDs.DisposeAsync();
+        await SupervisaoDs.DisposeAsync();
     }
 
     private async Task AdminAsync(string sql, Guid x)

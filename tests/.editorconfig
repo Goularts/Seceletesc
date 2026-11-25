@@ -1,3 +1,6 @@
 # Testes: nomes descritivos com sublinhado são intencionais.
 [*.cs]
 dotnet_diagnostic.CA1707.severity = none
+
+# Matrizes literais em testes deixam o cenário legível; desempenho não importa aqui.
+dotnet_diagnostic.CA1861.severity = none
