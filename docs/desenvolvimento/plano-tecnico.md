@@ -201,6 +201,15 @@ Limite assumido: pertinência fina e tom são julgamento do modelo. Esse risco �
 - **Política:** cada publicação cria uma versão nova (imutável), exige a versão vigente que o humano viu e grava a forma canônica (campos desconhecidos são descartados; classificação só pelo nome exato). O aviso de transferência passa pelas regras de conteúdo do validador, sem fonte (nenhum prazo, valor ou compromisso), na publicação e de novo ao enfileirar. Domínio permitido precisa ser um domínio completo.
 - **Requisito de implantação:** HTTPS obrigatório fora de desenvolvimento (a chave vai no cabeçalho); limite de taxa e credenciais distintas por papel ficam com a autenticação de produção.
 
+### 4.11 Governança do conhecimento, papéis e dados proporcionais (F3)
+
+- **Papéis:** atendente, supervisor e administrador (`governanca-conhecimento.md`, seção 3a). O papel vem do usuário autenticado, é lido a cada requisição e conferido pela API em toda operação. O banco confere de novo, a partir do usuário gravado na linha, nas operações de risco: aprovar (versão), mudar status (item), publicar a política e encerrar a pendência. Limite: o banco confia no id gravado pela API.
+- **Versões:** imutáveis. Sugestão e edição geram versões propostas (sem aprovador). A aprovação gera uma versão nova com aprovador, data carimbada pelo banco e permissões explícitas (classificação, escopo, validade). Só a versão apontada como vigente, aprovada e com status Aprovado chega ao agente. Editar um item aprovado não muda a versão vigente até a nova ser aprovada.
+- **Ciclo de vida:** Rev → Aprovado | Rejeitado; Aprovado → Aprovado (nova vigente) | Revogado. Rejeitado e revogado são finais. Todo item nasce Rev, inclusive pela supervisão. Aprovar, editar, rejeitar e revogar fazem `FOR UPDATE` no item e exigem a última versão vista.
+- **Limites:** supervisor aprova PUB, INT e TMP; NEG, EXC, RES e CLI só administrador. NEG e EXC exigem escopo de cliente ou atendimento e validade (também no banco). Só PUB fica sem validade. Escopo de proposta fora de uso.
+- **Dados protegidos:** três níveis (comum, identificação, financeiro). Resposta automática: comum só se constar na fonte citada; os demais nunca. Resposta humana e conhecimento: comum aceito; os demais recusados. Ao terminar um envio, o worker grava o histórico mascarado, cifra o valor e troca o texto da fila pela versão mascarada (uma única vez, permitido pelo trigger só nessa transição). Logs e eventos não registram valores.
+- **Pendência de retomada:** só supervisor ou administrador encerra, com motivo; o banco carimba a data e exige o responsável. Enquanto ativa, o validador bloqueia afirmações de "assunto resolvido" (lista determinística de expressões).
+
 ### 4.10 Segurança do repositório e dados
 
 - **Repositório público:**
@@ -242,6 +251,7 @@ F0 a F3 não dependem de decisão pendente nem de infraestrutura externa. Todas 
 
 | Fase | Situação |
 |---|---|
+| F3 Conhecimento e papéis | implementada: papéis no backend e no banco, ciclo de vida versionado e auditado, limites comerciais, dados protegidos proporcionais, pendência de retomada. Revisão em revisoes/2026-11-25-f3.md |
 | F2 Supervisão (API) | implementada: autenticação de desenvolvimento, assumir, liberar, responder, orientar, política; travas no banco para a mensagem humana. Revisão em revisoes/2026-11-25-f2.md |
 | F1b Pipeline | implementada: orquestrador, worker, criptografia, travas do banco. Revisão em revisoes/2026-11-25-f1b.md |
 | F1a Domínio | implementada: estados, validador, elegibilidade, rascunho estrito, dados protegidos. Revisão em revisoes/2026-11-25-f1a.md |
@@ -269,7 +279,7 @@ Ver `docs/project-context.md`. Afetam diretamente:
 - F1: categorias de dados protegidos (padrão técnico definido; o Victor pode ampliar).
 - F4: coexistência do número (app + API).
 - F5: provedor de IA (desbloqueada: dados delimitados).
-- F3 e F6: autenticação de produção, usuários e papéis (a F2 usa chave de API de desenvolvimento).
+- F6: autenticação de produção e gestão de usuários pelo painel (hoje: chave de API e papéis por linha de comando).
 - F7: assuntos autônomos e textos fixos.
 - Lacunas com padrão conservador já definido no plano (o Victor pode mudar):
   - retomada não responde mensagens anteriores à liberação;

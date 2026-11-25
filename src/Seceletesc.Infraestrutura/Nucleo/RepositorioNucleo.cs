@@ -115,7 +115,8 @@ internal static class RepositorioNucleo
 
     private const string SelectFonte = """
         select v.item_id, v.versao, v.tenant_id, i.assunto, v.conteudo, i.status, v.classificacoes,
-               v.escopo_tipo, v.escopo_ref, v.valido_ate, v.origem, (v.versao = i.versao_vigente) as vigente
+               v.escopo_tipo, v.escopo_ref, v.valido_ate, v.origem,
+               (v.versao = i.versao_vigente and v.aprovada_por is not null) as vigente
           from versoes_conhecimento v join itens_conhecimento i on i.id = v.item_id
         """;
 
@@ -126,7 +127,7 @@ internal static class RepositorioNucleo
     public static async Task<List<FonteConhecimento>> ListarFontesCandidatasAsync(NpgsqlConnection c, NpgsqlTransaction tx, Conversa conversa, CancellationToken ct)
     {
         await using var cmd = Cmd(c, tx, SelectFonte + """
-             where v.versao = i.versao_vigente and i.status = 'Aprovado'
+             where v.versao = i.versao_vigente and i.status = 'Aprovado' and v.aprovada_por is not null
                and (v.escopo_tipo = 'Empresa'
                     or (v.escopo_tipo = 'Cliente' and v.escopo_ref = @cliente)
                     or (v.escopo_tipo = 'Atendimento' and v.escopo_ref = @conversa))

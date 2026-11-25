@@ -10,7 +10,9 @@ using Seceletesc.Integracao.Testes.Pipeline;
 namespace Seceletesc.Integracao.Testes.Supervisao;
 
 /// <summary>A API real, em memória, conectada ao banco do teste com o usuário do papel seceletesc_supervisao.</summary>
-internal sealed class ApiSupervisao(BancoFixture banco, TimeProvider relogio) : WebApplicationFactory<Program>
+internal sealed class ApiSupervisao(BancoFixture banco, TimeProvider relogio) : ApiSupervisaoBase(banco, relogio);
+
+internal abstract class ApiSupervisaoBase(BancoFixture banco, TimeProvider relogio) : WebApplicationFactory<Program>
 {
     public HttpClient Cliente(string? chave)
     {

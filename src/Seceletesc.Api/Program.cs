@@ -16,6 +16,8 @@ builder.Services.AddKeyedSingleton(EndpointsSupervisao.ChaveDataSource, (sp, _) 
         ?? throw new InvalidOperationException("ConnectionStrings:Supervisao não configurada (usuário no papel seceletesc_supervisao).")));
 builder.Services.AddSingleton(sp => new ServicoSupervisao(
     sp.GetRequiredKeyedService<NpgsqlDataSource>(EndpointsSupervisao.ChaveDataSource), sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new ServicoConhecimento(
+    sp.GetRequiredKeyedService<NpgsqlDataSource>(EndpointsSupervisao.ChaveDataSource), sp.GetRequiredService<TimeProvider>()));
 
 var app = builder.Build();
 

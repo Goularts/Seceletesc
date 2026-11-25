@@ -262,8 +262,8 @@ public sealed class SupervisaoApiTestes(BancoFixture banco)
     [Theory]
     [Trait("Regra", "INV-23")]
     [InlineData("Seu CPF 529.982.247-25 foi registrado.")]
-    [InlineData("Mande para financeiro@empresa.com.br")]
-    public async Task Resposta_humana_com_dado_protegido_e_recusada_e_nada_fica_guardado(string texto)
+    [InlineData("Confirme o cartão 4111 1111 1111 1111.")]
+    public async Task Resposta_humana_com_dado_de_identificacao_ou_financeiro_e_recusada_e_nada_fica_guardado(string texto)
     {
         await using var amb = await AmbientePipeline.CriarAsync(banco);
         var conversa = await amb.ConversaAtendidaPelaIaAsync();
@@ -275,7 +275,49 @@ public sealed class SupervisaoApiTestes(BancoFixture banco)
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, r.StatusCode);
         Assert.Equal(0, await amb.ContarAsync("outbox where tenant_id = @tenant and autor_id is not null"));
-        Assert.DoesNotContain("529.982", await r.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        var corpo = await r.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("529.982", corpo, StringComparison.Ordinal);
+        Assert.DoesNotContain("4111", corpo, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-23")]
+    public async Task Email_em_resposta_humana_sai_mas_fica_mascarado_no_historico_e_na_fila_e_cifrado()
+    {
+        // F3: dado comum é aceito quando um humano autorizado o escreve; não fica em claro depois do envio.
+        await using var amb = await AmbientePipeline.CriarAsync(banco);
+        var conversa = await amb.ConversaAtendidaPelaIaAsync();
+        await using var api = amb.Api();
+        var c = api.Cliente(amb.ChaveSupervisor);
+        const string texto = "Pode enviar o comprovante para financeiro@empresa.com.br, por favor.";
+
+        await c.PostAsync(new Uri($"/supervisao/conversas/{conversa}/assumir", UriKind.Relative), null);
+        var r = await c.PostAsJsonAsync($"/supervisao/conversas/{conversa}/responder", new { texto });
+        var ciclo = await amb.Worker().ProcessarProximoAsync();
+
+        Assert.Equal(HttpStatusCode.Accepted, r.StatusCode);
+        Assert.Equal(ResultadoCiclo.Enviada, ciclo);
+        Assert.Equal(texto, amb.Gateway.Enviadas[^1].Texto);
+        Assert.Equal(0L, await banco.ConsultarComoAdminAsync($"select count(*) from mensagens where tenant_id = '{amb.TenantId}' and texto_mascarado like '%financeiro@%'"));
+        Assert.Equal(0L, await banco.ConsultarComoAdminAsync($"select count(*) from outbox where tenant_id = '{amb.TenantId}' and texto like '%financeiro@%'"));
+        Assert.Equal(1, await amb.ContarAsync("outbox where tenant_id = @tenant and autor_id is not null and texto_mascarado and status = 'enviada'"));
+        Assert.Equal("financeiro@empresa.com.br", await DecifrarUnicoDadoAsync(amb, conversa, "Email"));
+    }
+
+    internal static async Task<string> DecifrarUnicoDadoAsync(AmbientePipeline amb, Guid conversa, string categoria)
+    {
+        await using var conexao = new Npgsql.NpgsqlConnection(amb.Banco.ConnectionStringAdmin);
+        await conexao.OpenAsync();
+        await using var cmd = new Npgsql.NpgsqlCommand(
+            "select id, mensagem_id, chave_id, chave_cifrada, nonce, cifrado, tag from dados_protegidos where conversa_id = @c and categoria = @cat", conexao);
+        cmd.Parameters.AddWithValue("c", conversa);
+        cmd.Parameters.AddWithValue("cat", categoria);
+        await using var leitor = await cmd.ExecuteReaderAsync();
+        Assert.True(await leitor.ReadAsync());
+        var dado = new Infraestrutura.Criptografia.DadoCifrado(leitor.GetString(2), (byte[])leitor[3], (byte[])leitor[4], (byte[])leitor[5], (byte[])leitor[6]);
+        var contexto = new Infraestrutura.Criptografia.ContextoCifragem(amb.TenantId, leitor.GetGuid(0), conversa, leitor.GetGuid(1), categoria);
+        using var decifrador = new Infraestrutura.Criptografia.DecifradorDadosProtegidos(AmbientePipeline.ChavePrivadaPem);
+        return decifrador.Decifrar(dado, contexto);
     }
 
     [Fact]

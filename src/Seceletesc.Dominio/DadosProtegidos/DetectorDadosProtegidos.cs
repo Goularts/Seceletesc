@@ -18,10 +18,28 @@ public enum CategoriaDadoProtegido
     Documento,
 }
 
+/// <summary>
+/// Tratamento proporcional ao risco (decisão do Victor, 2026-11-25, F3):
+/// <list type="bullet">
+/// <item><b>Comum</b> (e-mail, CEP): só quando autorizado e pertinente; nunca guardado em claro no histórico.</item>
+/// <item><b>Identificação</b> (CPF, CNPJ, RG, documento, chave PIX): exige finalidade definida e acesso restrito.
+/// Ainda não há mecanismo de finalidade, então não sai em mensagem.</item>
+/// <item><b>Financeiro</b> (número completo de cartão): nunca reproduzido em mensagem nem guardado em claro.</item>
+/// </list>
+/// </summary>
+public enum NivelDadoProtegido
+{
+    Comum,
+    Identificacao,
+    Financeiro,
+}
+
 /// <summary>Dado protegido encontrado no texto limpo: posição, categoria e valor original.</summary>
 public sealed record OcorrenciaDadoProtegido(CategoriaDadoProtegido Categoria, int Inicio, int Tamanho, string Valor)
 {
     /// <summary>Nunca imprime o valor: um log acidental não pode vazar o dado.</summary>
+    public NivelDadoProtegido Nivel => DetectorDadosProtegidos.Nivel(Categoria);
+
     public override string ToString() => $"OcorrenciaDadoProtegido {{ Categoria = {Categoria}, Inicio = {Inicio}, Tamanho = {Tamanho}, Valor = *** }}";
 }
 
@@ -41,6 +59,13 @@ public sealed record TextoMascarado(string Texto, IReadOnlyList<OcorrenciaDadoPr
 public static partial class DetectorDadosProtegidos
 {
     private const int TimeoutMs = 1000;
+
+    public static NivelDadoProtegido Nivel(CategoriaDadoProtegido categoria) => categoria switch
+    {
+        CategoriaDadoProtegido.Email or CategoriaDadoProtegido.Cep => NivelDadoProtegido.Comum,
+        CategoriaDadoProtegido.Cartao => NivelDadoProtegido.Financeiro,
+        _ => NivelDadoProtegido.Identificacao,
+    };
 
     public static TextoMascarado Mascarar(string texto)
     {

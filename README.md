@@ -36,7 +36,7 @@ Autenticação de desenvolvimento: cada usuário da supervisão tem uma chave de
 set "SECELETESC_CONEXAO_DONO=Host=127.0.0.1;Port=55432;Database=seceletesc;Username=seceletesc_dono;Password=SENHA_LOCAL"
 dotnet run --project src\Seceletesc.Api -- migrar
 dotnet run --project src\Seceletesc.Api -- criar-tenant --nome "Empresa de teste"
-dotnet run --project src\Seceletesc.Api -- criar-supervisor --tenant ID_DO_TENANT --nome "Recepção"
+dotnet run --project src\Seceletesc.Api -- criar-supervisor --tenant ID_DO_TENANT --nome "Administração" --papel Administrador
 
 set "ConnectionStrings__Supervisao=Host=127.0.0.1;Port=55432;Database=seceletesc;Username=supervisao_local;Password=SENHA_LOCAL"
 dotnet run --project src\Seceletesc.Api
@@ -60,3 +60,13 @@ Rotas (todas exigem a chave; o tenant vem do usuário):
 | `POST /supervisao/conversas/{id}/orientar` | `{"texto": "...", "assunto": "..."}`: vira sugestão REV |
 | `GET /supervisao/politica` | política vigente |
 | `PUT /supervisao/politica` | `{"versaoEsperada": n, "conteudo": {...}}`: publica nova versão |
+| `POST /supervisao/conversas/{id}/encerrar-retomada` | `{"motivo": "..."}`: encerra a pendência de retomada pelo celular |
+| `GET /supervisao/conhecimento?status=` | lista o conhecimento da empresa |
+| `GET /supervisao/conhecimento/{id}` | versões e auditoria |
+| `POST /supervisao/conhecimento` | `{"assunto", "conteudo", "conversaOrigem"?, "sugeridas"?}`: nova sugestão (Rev) |
+| `POST /supervisao/conhecimento/{id}/editar` | `{"versaoBase", "conteudo", "permissoes"?}`: nova versão proposta |
+| `POST /supervisao/conhecimento/{id}/aprovar` | `{"versaoProposta", "permissoes": {"classificacoes", "escopoTipo", "escopoRef"?, "validoAte"?}}` |
+| `POST /supervisao/conhecimento/{id}/rejeitar` | `{"motivo"}` |
+| `POST /supervisao/conhecimento/{id}/revogar` | `{"motivo"}` (só administrador) |
+
+Papéis (`--papel`, padrão `Atendente`; troca com `alterar-papel --usuario ID --papel PAPEL`): o atendente vê, assume, responde, orienta e sugere; o supervisor também libera, encerra pendências e revisa e aprova conhecimento comum; o administrador também publica a política, aprova NEG, EXC, RES e CLI e revoga.

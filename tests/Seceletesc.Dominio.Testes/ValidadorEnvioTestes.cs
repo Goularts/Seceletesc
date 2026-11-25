@@ -351,19 +351,67 @@ public sealed class ValidadorEnvioTestes
         Assert.True(ValidadorEnvio.ValidarTextoFixo(politica.TextoAvisoTransferencia, politica).Aprovado);
     }
 
+    // F3 (decisão do Victor, 2026-11-25): tratamento proporcional ao risco. Identificação e financeiro nunca saem,
+    // mesmo que estejam numa fonte; dado comum (e-mail) só sai se constar numa fonte citada.
     [Theory]
     [Trait("Regra", "INV-23")]
     [Trait("Regra", "INV-11")]
     [InlineData("Seu CPF cadastrado é 529.982.247-25.")]
-    [InlineData("Mande para financeiro@empresa.com.br")]
-    public void Dado_protegido_no_texto_de_saida_e_bloqueado(string texto)
+    [InlineData("O cartão 4111 1111 1111 1111 está cadastrado.")]
+    public void Dado_de_identificacao_ou_financeiro_nunca_sai_mesmo_estando_na_fonte(string texto)
     {
         var fonte = Fonte("horario", texto);
-        var politica = Politica(p => p.Dominios.Add("empresa.com.br"));
 
-        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", fonte), Contexto(NovaConversa(), politica, fonte));
+        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", fonte), Contexto(NovaConversa(), Politica(), fonte));
 
         Assert.Equal(MotivoBloqueio.DadoProtegidoNaResposta, r.Motivo);
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-23")]
+    public void Email_que_consta_na_fonte_citada_e_autorizado_e_seu_dominio_nao_conta_como_url()
+    {
+        const string texto = "Para segunda via, escreva para financeiro@empresa.com.br.";
+        var fonte = Fonte("horario", "Segunda via de boleto: financeiro@empresa.com.br.");
+
+        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", fonte), Contexto(NovaConversa(), Politica(), fonte));
+
+        Assert.True(r.Aprovado, r.Motivo?.ToString());
+    }
+
+    [Theory]
+    [Trait("Regra", "INV-23")]
+    [InlineData("Escreva para outro@empresa.com.br.")]
+    [InlineData("Escreva para financeiro@outra-empresa.com.br.")]
+    // Revisão da F3 (G1): parte de um e-mail autorizado não é o e-mail autorizado.
+    [InlineData("Escreva para ro@empresa.com.br.")]
+    [InlineData("Escreva para financeiro@empresa.com.")]
+    [InlineData("Escreva para financeiro@empresa.com.br.golpe.com.")]
+    public void Email_que_nao_consta_na_fonte_citada_e_bloqueado(string texto)
+    {
+        var fonte = Fonte("horario", "Segunda via de boleto: financeiro@empresa.com.br.");
+
+        var r = ValidadorEnvio.Validar(Rascunho(texto, "horario", fonte), Contexto(NovaConversa(), Politica(), fonte));
+
+        Assert.Equal(MotivoBloqueio.DadoProtegidoNaResposta, r.Motivo);
+    }
+
+    [Theory]
+    [Trait("Regra", "INV-8")]
+    [InlineData("Seu pedido já foi resolvido.")]
+    [InlineData("Está tudo certo com o seu cadastro.")]
+    [InlineData("O atendimento foi concluído.")]
+    public void Com_pendencia_de_retomada_a_IA_nao_afirma_que_o_assunto_foi_resolvido(string texto)
+    {
+        var fonte = Fonte("horario", texto);
+        var comPendencia = NovaConversa();
+        comPendencia.MarcarRetomadaHumana();
+
+        var bloqueado = ValidadorEnvio.Validar(Rascunho(texto, "horario", fonte), Contexto(comPendencia, Politica(), fonte));
+        var semPendencia = ValidadorEnvio.Validar(Rascunho(texto, "horario", fonte), Contexto(NovaConversa(), Politica(), fonte));
+
+        Assert.Equal(MotivoBloqueio.ResolucaoComPendencia, bloqueado.Motivo);
+        Assert.True(semPendencia.Aprovado, semPendencia.Motivo?.ToString());
     }
 
     // ---- Achados da revisão de segurança da F1a ----

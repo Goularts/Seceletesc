@@ -9,7 +9,7 @@ namespace Seceletesc.Api.Supervisao;
 /// </summary>
 internal static class ComandosAdministracao
 {
-    private static readonly string[] Comandos = ["migrar", "criar-tenant", "criar-supervisor", "desativar-supervisor"];
+    private static readonly string[] Comandos = ["migrar", "criar-tenant", "criar-supervisor", "alterar-papel", "desativar-supervisor"];
 
     public static bool EhComando(string arg) => Comandos.Contains(arg, StringComparer.Ordinal);
 
@@ -31,11 +31,15 @@ internal static class ComandosAdministracao
             case "criar-tenant" when Opcao(args, "--nome") is { } nome:
                 Console.WriteLine(await AdministracaoSupervisao.CriarTenantAsync(conexao, nome).ConfigureAwait(false));
                 return 0;
-            case "criar-supervisor" when Guid.TryParse(Opcao(args, "--tenant"), out var tenant) && Opcao(args, "--nome") is { } nome:
-                var (id, chave) = await AdministracaoSupervisao.CriarSupervisorAsync(conexao, tenant, nome).ConfigureAwait(false);
-                Console.WriteLine($"usuario: {id}");
+            case "criar-supervisor" when Guid.TryParse(Opcao(args, "--tenant"), out var tenant) && Opcao(args, "--nome") is { } nome
+                                        && LerPapel(Opcao(args, "--papel") ?? nameof(PapelSupervisao.Atendente)) is { } papel:
+                var (id, chave) = await AdministracaoSupervisao.CriarSupervisorAsync(conexao, tenant, nome, papel).ConfigureAwait(false);
+                Console.WriteLine($"usuario: {id} ({papel})");
                 Console.WriteLine($"chave:   {chave}");
                 Console.WriteLine("Guarde a chave agora: ela não é exibida de novo.");
+                return 0;
+            case "alterar-papel" when Guid.TryParse(Opcao(args, "--usuario"), out var alvo) && LerPapel(Opcao(args, "--papel")) is { } novoPapel:
+                Console.WriteLine(await AdministracaoSupervisao.AlterarPapelAsync(conexao, alvo, novoPapel).ConfigureAwait(false) ? "Papel alterado." : "Usuário não encontrado.");
                 return 0;
             case "desativar-supervisor" when Guid.TryParse(Opcao(args, "--usuario"), out var usuario):
                 Console.WriteLine(await AdministracaoSupervisao.DesativarSupervisorAsync(conexao, usuario).ConfigureAwait(false) ? "Desativado." : "Usuário não encontrado.");
@@ -45,12 +49,17 @@ internal static class ComandosAdministracao
                     Uso:
                       migrar
                       criar-tenant --nome "<nome>"
-                      criar-supervisor --tenant <id> --nome "<nome>"
+                      criar-supervisor --tenant <id> --nome "<nome>" [--papel Atendente|Supervisor|Administrador]
+                      alterar-papel --usuario <id> --papel Atendente|Supervisor|Administrador
                       desativar-supervisor --usuario <id>
                     """).ConfigureAwait(false);
                 return 2;
         }
     }
+
+    /// <summary>Só o nome exato do papel (sem números nem combinações).</summary>
+    private static PapelSupervisao? LerPapel(string? nome) =>
+        nome is not null && Enum.GetNames<PapelSupervisao>().Contains(nome, StringComparer.Ordinal) ? Enum.Parse<PapelSupervisao>(nome) : null;
 
     private static string? Opcao(string[] args, string nome)
     {

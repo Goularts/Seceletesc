@@ -103,7 +103,8 @@ public sealed class PipelineEnvioTestes(BancoFixture banco)
         var futuro = AmbientePipeline.Inicio.AddDays(30);
         await amb.ConhecimentoAsync("horario", Horario);
         await amb.ConhecimentoAsync("horario", "Margem interna de 40%.", [Classificacao.Interno], validoAte: futuro);
-        await amb.ConhecimentoAsync("precos", "Desconto negociado com a Maria: 15%.", [Classificacao.Negociacao], validoAte: futuro);
+        // NEG só existe com escopo de cliente ou atendimento (migração 0004); aqui, de outro cliente.
+        await amb.ConhecimentoAsync("precos", "Desconto negociado com a Maria: 15%.", [Classificacao.Negociacao], TipoEscopo.Cliente, Guid.NewGuid(), validoAte: futuro);
         await amb.ConhecimentoAsync("precos", "Senha do sistema: segredo.", [Classificacao.Restrito], validoAte: futuro);
         await amb.ConhecimentoAsync("horario", "Abrimos às 6h.", status: "Rev");
         await amb.ConhecimentoAsync("horario", "Sugestão revogada.", status: "Revogado");
@@ -421,7 +422,7 @@ public sealed class PipelineEnvioTestes(BancoFixture banco)
         await amb.Orquestrador(new MotorFalso(ctx => Task.FromResult(MotorFalso.Rascunho(ctx, Horario, "horario")))).ProcessarAsync(amb.Mensagem("Qual o horário?"));
         var lento = new GatewayLento();
 
-        var ciclo = await new ProcessadorEnvio(amb.WorkerDs, lento, amb.Relogio, TimeSpan.FromMilliseconds(200)).ProcessarProximoAsync();
+        var ciclo = await new ProcessadorEnvio(amb.WorkerDs, lento, amb.Relogio, amb.Cifrador, TimeSpan.FromMilliseconds(200)).ProcessarProximoAsync();
 
         Assert.Equal(ResultadoCiclo.Incerta, ciclo);
         Assert.True(lento.Cancelado);

@@ -86,9 +86,10 @@ internal sealed class AmbientePipeline : IAsyncDisposable
         App = banco.CriarDataSource("app_teste", maxPool: 4);
         WorkerDs = banco.CriarDataSource("worker_teste", maxPool: 4);
         SupervisaoDs = banco.CriarDataSource("supervisao_teste", maxPool: 4);
-        Supervisor = new UsuarioSupervisao(supervisorId, tenantId);
+        Supervisor = new UsuarioSupervisao(supervisorId, tenantId, PapelSupervisao.Administrador);
         ChaveSupervisor = chaveSupervisor;
         Supervisao = new ServicoSupervisao(SupervisaoDs, Relogio);
+        Conhecimento = new ServicoConhecimento(SupervisaoDs, Relogio);
     }
 
     public Guid TenantId { get; }
@@ -106,9 +107,12 @@ internal sealed class AmbientePipeline : IAsyncDisposable
 
     public ServicoSupervisao Supervisao { get; }
 
+    public ServicoConhecimento Conhecimento { get; }
+
+    /// <summary>Usuário padrão do ambiente: administrador (tem todas as permissões). Papéis menores: CriarUsuarioAsync.</summary>
     public UsuarioSupervisao Supervisor { get; }
 
-    /// <summary>Chave de API do supervisor deste tenant.</summary>
+    /// <summary>Chave de API do usuário padrão (administrador) deste tenant.</summary>
     public string ChaveSupervisor { get; }
 
     public BancoFixture Banco => _banco;
@@ -153,7 +157,7 @@ internal sealed class AmbientePipeline : IAsyncDisposable
 
         var supervisorId = Guid.NewGuid();
         var chave = ServicoSupervisao.GerarChave();
-        await using (var sup = new NpgsqlCommand("insert into usuarios_supervisao (id, tenant_id, nome, chave_sha256) values (@id, @t, 'Supervisor de teste', @h)", c))
+        await using (var sup = new NpgsqlCommand("insert into usuarios_supervisao (id, tenant_id, nome, chave_sha256, papel) values (@id, @t, 'Administrador de teste', @h, 'Administrador')", c))
         {
             sup.Parameters.AddWithValue("id", supervisorId);
             sup.Parameters.AddWithValue("t", tenantId);
@@ -164,14 +168,27 @@ internal sealed class AmbientePipeline : IAsyncDisposable
         return new AmbientePipeline(banco, tenantId, supervisorId, chave);
     }
 
+    /// <summary>Cifrador com a chave pública de teste (o mesmo do pipeline e do worker).</summary>
+    public CifradorDadosProtegidos Cifrador => _cifrador;
+
     public ProcessadorMensagemRecebida Orquestrador(IMotorIA motor) => new(App, motor, _cifrador, Relogio);
 
-    public ProcessadorEnvio Worker() => new(WorkerDs, Gateway, Relogio);
+    public ProcessadorEnvio Worker() => new(WorkerDs, Gateway, Relogio, _cifrador);
+
+    /// <summary>Novo usuário da supervisão neste tenant, com o papel pedido, e a chave de API dele.</summary>
+    public async Task<(UsuarioSupervisao Usuario, string Chave)> CriarUsuarioAsync(PapelSupervisao papel)
+    {
+        var (id, chave) = await AdministracaoSupervisao.CriarSupervisorAsync(_banco.ConnectionStringDono, TenantId, "Usuário " + papel, papel);
+        return (new UsuarioSupervisao(id, TenantId, papel), chave);
+    }
 
     public MensagemRecebida Mensagem(string texto, string? wamid = null, DateTimeOffset? em = null) =>
         new(TenantId, WaCliente, texto, wamid ?? "wamid.entrada." + Guid.NewGuid(), em ?? Relogio.Agora);
 
-    /// <summary>Semeia conhecimento como a supervisão humana faria (administrador passa pelos gatilhos de status).</summary>
+    /// <summary>
+    /// Semeia conhecimento pelo mesmo ciclo da supervisão (migração 0004): sugestão Rev (versão 1, proposta) e, se
+    /// pedido, versão 2 aprovada por um administrador da empresa. Devolve a versão vigente.
+    /// </summary>
     public async Task<ChaveFonte> ConhecimentoAsync(
         string assunto, string conteudo, Classificacao[]? classificacoes = null, TipoEscopo escopo = TipoEscopo.Empresa,
         Guid? escopoRef = null, DateTimeOffset? validoAte = null, string status = "Aprovado", Guid? tenant = null)
@@ -180,26 +197,95 @@ internal sealed class AmbientePipeline : IAsyncDisposable
         var t = tenant ?? TenantId;
         await using var c = new NpgsqlConnection(_banco.ConnectionStringAdmin);
         await c.OpenAsync();
-        await using var cmd = new NpgsqlCommand("""
-            insert into itens_conhecimento (id, tenant_id, assunto, status, versao_vigente) values (@i, @t, @a, @s, 1);
+        await DefinirTenantNaSessaoAsync(c, t);
+        var aprovador = await AdministradorDoTenantAsync(c, t);
+
+        async Task Executar(string sql, int versao)
+        {
+            await using var cmd = new NpgsqlCommand(sql, c);
+            cmd.Parameters.AddWithValue("i", itemId);
+            cmd.Parameters.AddWithValue("t", t);
+            cmd.Parameters.AddWithValue("a", assunto);
+            cmd.Parameters.AddWithValue("c", conteudo);
+            cmd.Parameters.Add(new NpgsqlParameter("cl", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = (classificacoes ?? [Classificacao.Publico]).Select(x => x.ToString()).ToArray() });
+            cmd.Parameters.AddWithValue("e", escopo.ToString());
+            cmd.Parameters.AddWithValue("er", (object?)escopoRef ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("v", (object?)validoAte ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("u", aprovador);
+            cmd.Parameters.AddWithValue("ver", versao);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        await Executar("""
+            insert into itens_conhecimento (id, tenant_id, assunto, status, versao_vigente) values (@i, @t, @a, 'Rev', 1);
             insert into versoes_conhecimento (item_id, versao, tenant_id, conteudo, classificacoes, escopo_tipo, escopo_ref, valido_ate, origem)
             values (@i, 1, @t, @c, @cl, @e, @er, @v, 'teste');
-            """, c);
-        cmd.Parameters.AddWithValue("i", itemId);
-        cmd.Parameters.AddWithValue("t", t);
-        cmd.Parameters.AddWithValue("a", assunto);
-        cmd.Parameters.AddWithValue("s", status);
-        cmd.Parameters.AddWithValue("c", conteudo);
-        cmd.Parameters.Add(new NpgsqlParameter("cl", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = (classificacoes ?? [Classificacao.Publico]).Select(x => x.ToString()).ToArray() });
-        cmd.Parameters.AddWithValue("e", escopo.ToString());
-        cmd.Parameters.AddWithValue("er", (object?)escopoRef ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("v", (object?)validoAte ?? DBNull.Value);
-        await cmd.ExecuteNonQueryAsync();
-        return new ChaveFonte(itemId, 1);
+            """, 1);
+        if (status == "Rev")
+        {
+            return new ChaveFonte(itemId, 1);
+        }
+
+        if (status == "Rejeitado")
+        {
+            await Executar("update itens_conhecimento set status = 'Rejeitado', alterado_por = @u where id = @i", 1);
+            return new ChaveFonte(itemId, 1);
+        }
+
+        await Executar("""
+            insert into versoes_conhecimento (item_id, versao, tenant_id, conteudo, classificacoes, escopo_tipo, escopo_ref, valido_ate, origem, aprovada_por, aprovada_em)
+            values (@i, @ver, @t, @c, @cl, @e, @er, @v, 'teste', @u, now());
+            update itens_conhecimento set status = 'Aprovado', versao_vigente = @ver, alterado_por = @u where id = @i;
+            """, 2);
+        if (status == "Revogado")
+        {
+            await Executar("update itens_conhecimento set status = 'Revogado', alterado_por = @u where id = @i", 2);
+        }
+
+        return new ChaveFonte(itemId, 2);
     }
 
-    public Task RevogarAsync(ChaveFonte fonte) =>
-        AdminAsync("update itens_conhecimento set status = 'Revogado' where id = @x", fonte.ItemId);
+    public async Task RevogarAsync(ChaveFonte fonte)
+    {
+        await using var c = new NpgsqlConnection(_banco.ConnectionStringAdmin);
+        await c.OpenAsync();
+        var tenant = (Guid)(await new NpgsqlCommand($"select tenant_id from itens_conhecimento where id = '{fonte.ItemId}'", c).ExecuteScalarAsync())!;
+        await DefinirTenantNaSessaoAsync(c, tenant);
+        var admin = await AdministradorDoTenantAsync(c, tenant);
+        await using var cmd = new NpgsqlCommand("update itens_conhecimento set status = 'Revogado', alterado_por = @u where id = @x", c);
+        cmd.Parameters.AddWithValue("u", admin);
+        cmd.Parameters.AddWithValue("x", fonte.ItemId);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    /// <summary>As funções de papel só respondem pela empresa da transação (migração 0004), também na semeadura.</summary>
+    private static async Task DefinirTenantNaSessaoAsync(NpgsqlConnection c, Guid tenant)
+    {
+        await using var cmd = new NpgsqlCommand("select set_config('app.tenant_id', @t, false)", c);
+        cmd.Parameters.AddWithValue("t", tenant.ToString());
+        await cmd.ExecuteScalarAsync();
+    }
+
+    /// <summary>Um administrador ativo da empresa (criado se a empresa ainda não tiver).</summary>
+    private static async Task<Guid> AdministradorDoTenantAsync(NpgsqlConnection c, Guid tenant)
+    {
+        await using (var sel = new NpgsqlCommand("select id from usuarios_supervisao where tenant_id = @t and papel = 'Administrador' and ativo limit 1", c))
+        {
+            sel.Parameters.AddWithValue("t", tenant);
+            if (await sel.ExecuteScalarAsync() is Guid existente)
+            {
+                return existente;
+            }
+        }
+
+        var id = Guid.NewGuid();
+        await using var ins = new NpgsqlCommand("insert into usuarios_supervisao (id, tenant_id, nome, chave_sha256, papel) values (@id, @t, 'Administrador semeado', @h, 'Administrador')", c);
+        ins.Parameters.AddWithValue("id", id);
+        ins.Parameters.AddWithValue("t", tenant);
+        ins.Parameters.AddWithValue("h", ServicoSupervisao.HashChave(ServicoSupervisao.GerarChave()));
+        await ins.ExecuteNonQueryAsync();
+        return id;
+    }
 
     public async Task<Guid> ConversaIdAsync() =>
         (await ConsultarAsync<Guid?>("select id from conversas where tenant_id = @tenant")) ?? throw new InvalidOperationException("Sem conversa.");

@@ -78,4 +78,16 @@ Todo bloqueio sem permissão de esclarecimento segue para `SUPERVISÃO`. Nunca h
 | 14. controles no backend | Pipeline: com o modelo retornando texto proibido, o backend bloqueia (modelo simulado) |
 | 15. histórico ≠ base | Dados: nada do histórico é consultável como conhecimento |
 | 16. IA não aprova/publica | Dados: nenhuma operação disponível ao motor de IA ou ao agente altera status de conhecimento além de criar sugestão REV |
-| 17. ciclo de vida | Dados: aprovar, editar (nova versão), rejeitar, restringir, revogar; só humano autorizado |
+| 17. ciclo de vida | Dados: aprovar, editar (nova versão), rejeitar, restringir, revogar; só humano autorizado. F3: `ConhecimentoApiTestes` (fluxo, versões, auditoria, papéis) e `ConhecimentoTravasTestes` (o mesmo no banco, contornando a API) |
+| 18. sem promoção automática; negociação não vira condição geral | F3: NEG/EXC só com administrador, cliente ou atendimento e validade (API, banco e elegibilidade); supervisor não rebaixa nem amplia escopo (`RevisaoF3Testes.G2_...`, `S1_...`) |
+| 23. dados protegidos | F3, tratamento proporcional: identificação e financeiro nunca saem (automática e humana); e-mail só se idêntico ao da fonte citada (`ValidadorEnvioTestes.Email_...`); envio guarda histórico e fila mascarados e o valor cifrado (`SupervisaoApiTestes.Email_em_resposta_humana_...`); logs sem dados (`ConhecimentoApiTestes.Logs_da_api_...`) |
+| 24. retomada pelo celular | F3: pendência só encerrada por supervisor com motivo, não encerrada ao liberar, limpa ao reabrir; IA não afirma "resolvido" com pendência ativa (`ConhecimentoApiTestes.Pendencia_...`, `Com_pendencia_...`, `RevisaoF3Testes.S7_...`) |
+
+## Papéis humanos (F3)
+
+| Regra | Teste |
+|---|---|
+| Atendente não aprova, edita, rejeita nem revoga; não libera; não publica política | `ConhecimentoApiTestes.Atendente_*`, `ConhecimentoTravasTestes.Banco_*`, `RevisaoF3Testes.S3_*` |
+| Supervisor aprova comum, não aprova NEG/EXC/RES/CLI, não revoga, não publica política | `ConhecimentoApiTestes.Supervisor_*`, `So_administrador_publica_politica` |
+| Administrador não dispensa as travas: NEG/EXC exigem cliente e validade mesmo para ele | `ConhecimentoApiTestes.Mesmo_o_administrador_*` |
+| Papel validado pelo banco a partir do usuário gravado; funções de papel só pela empresa da transação | `ConhecimentoTravasTestes`, `RevisaoF3Testes.S12_*` |
