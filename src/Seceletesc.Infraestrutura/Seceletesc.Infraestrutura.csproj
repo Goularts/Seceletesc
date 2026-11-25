@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Seceletesc.Aplicacao\Seceletesc.Aplicacao.csproj" />
+    <ProjectReference Include="..\Seceletesc.Dominio\Seceletesc.Dominio.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.4" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Banco\Migracoes\*.sql" />
+    <EmbeddedResource Include="Banco\Provisionamento\*.sql" />
+  </ItemGroup>
+
+</Project>

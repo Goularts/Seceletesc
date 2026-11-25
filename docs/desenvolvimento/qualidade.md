@@ -52,7 +52,12 @@ Proporcional à complexidade: mudança pequena não precisa de todas as etapas.
 - Os testes de regras A e B verificam **a decisão do backend** (envio autorizado, bloqueado, supervisão acionada, motivo registrado), não apenas se o texto do modelo parece adequado.
 - Testes podem ser criados e alterados livremente, **exceto** para enfraquecer a proteção de uma regra A ou B só para fazer uma implementação passar. Se um teste de regra mudar, o PR explica o porquê, e o `guardiao-regras` confere.
 - Matriz regra → teste: `matriz-rastreabilidade.md`.
-- Cada teste de regra é marcado com o ID da regra (ex.: `CTX-007`, `ADV-05`). O CI confere automaticamente que toda regra da matriz tem ao menos um teste e falha se um teste de regra for removido. Proteção automática, sem aprovação humana.
+- Cada teste de regra é marcado com `[Trait("Regra", "<ID>")]`, com IDs `INV-<n>`, `CTX-<nnn>` ou `ADV-<nn>`.
+- `docs/desenvolvimento/cobertura-obrigatoria.txt` lista as regras exigidas até a fase atual e o mínimo de testes de cada uma.
+- Proteção automática, sem aprovação humana:
+  - `CoberturaRegrasTestes` conta os testes ativos nos assemblies compilados (teste desativado com `Skip` ou comentado não conta) e falha se alguma regra ficar abaixo do mínimo, ou se algum teste apontar para uma regra que não existe;
+  - o job `cobertura-nao-diminui` do CI falha se o PR tirar uma regra da lista ou reduzir um mínimo.
+- Testes que protegem o banco são validados por mutação: remover a proteção deve fazer algum teste falhar.
 
 ### Cenários adversariais obrigatórios
 
