@@ -26,6 +26,10 @@ public static class EndpointsWhatsApp
     private static readonly Action<ILogger, string, string?, Exception?> LogRecusado =
         LoggerMessage.Define<string, string?>(LogLevel.Warning, new EventId(2001, "WebhookRecusado"), "Webhook do WhatsApp recusado: {Motivo} (ip {Ip})");
 
+    private static readonly Action<ILogger, Exception?> LogSemChave =
+        LoggerMessage.Define(LogLevel.Error, new EventId(2003, "EnvioSemChave"),
+            "WhatsApp:EnvioHabilitado está ligado, mas WhatsApp:ChaveCredenciais está ausente ou inválida: nenhuma mensagem sai; cada uma é cancelada e vai para a supervisão.");
+
     private static readonly Action<ILogger, int, int, int, Exception?> LogProcessado =
         LoggerMessage.Define<int, int, int>(LogLevel.Information, new EventId(2002, "WebhookProcessado"),
             "Webhook do WhatsApp: {Registrados} registrados, {Repetidos} repetidos, {Ignorados} ignorados");
@@ -65,22 +69,26 @@ public static class EndpointsWhatsApp
             builder.Services.AddHostedService<TrabalhadorIaHospedado>();
         }
 
-        // Envio real: só com autorização (decisão 31) e configuração completa. Sem isso, nenhum trabalhador de envio roda.
-        if (opcoes.EnvioHabilitado && !string.IsNullOrEmpty(opcoes.TokenAcesso))
+        // Envio real: só com autorização (decisões 31 e 34). Mesmo ligado, cada número só envia com as três etapas cumpridas
+        // no cadastro (conferidas no banco). Sem a chave das credenciais (revisão da M1, S2), o trabalhador roda com um
+        // gateway que recusa tudo: cada mensagem é cancelada e vai para a supervisão, em vez de ficar parada sem aviso.
+        if (opcoes.EnvioHabilitado)
         {
-            builder.Services.AddHttpClient(nameof(GatewayWhatsAppCloud), c => c.Timeout = TimeSpan.FromSeconds(30));
-            builder.Services.AddSingleton<Aplicacao.Envio.IGatewayWhatsApp>(sp =>
+            if (CifradorCredenciais.DaConfiguracao(opcoes.ChaveCredenciais) is { } cifradorCredenciais)
             {
-                var worker = sp.GetRequiredKeyedService<NpgsqlDataSource>(ChaveDataSourceWorker);
-                return new GatewayWhatsAppCloud(sp.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(GatewayWhatsAppCloud)), opcoes, async (tenant, numero, ct) =>
+                builder.Services.AddHttpClient(nameof(GatewayWhatsAppCloud), c => c.Timeout = TimeSpan.FromSeconds(30));
+                builder.Services.AddSingleton(sp => new RepositorioCredenciaisWhatsApp(sp.GetRequiredKeyedService<NpgsqlDataSource>(ChaveDataSourceWorker), cifradorCredenciais));
+                builder.Services.AddSingleton<Aplicacao.Envio.IGatewayWhatsApp>(sp =>
                 {
-                    await using var c = await worker.OpenConnectionAsync(ct);
-                    await using var cmd = new NpgsqlCommand("select numero_do_tenant(@t, @n)", c);
-                    cmd.Parameters.AddWithValue("t", tenant);
-                    cmd.Parameters.AddWithValue("n", numero);
-                    return await cmd.ExecuteScalarAsync(ct) is true;
+                    var credenciais = sp.GetRequiredService<RepositorioCredenciaisWhatsApp>();
+                    return new GatewayWhatsAppCloud(sp.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(GatewayWhatsAppCloud)), opcoes, credenciais.ObterParaEnvioAsync);
                 });
-            });
+            }
+            else
+            {
+                builder.Services.AddSingleton<Aplicacao.Envio.IGatewayWhatsApp, GatewaySemCredenciais>();
+            }
+
             builder.Services.AddSingleton(sp => new ProcessadorEnvio(
                 sp.GetRequiredKeyedService<NpgsqlDataSource>(ChaveDataSourceWorker), sp.GetRequiredService<Aplicacao.Envio.IGatewayWhatsApp>(),
                 sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<CifradorDadosProtegidos>()));
@@ -95,6 +103,11 @@ public static class EndpointsWhatsApp
 
     public static void MapWhatsApp(this WebApplication app)
     {
+        if (app.Services.GetService<Aplicacao.Envio.IGatewayWhatsApp>() is GatewaySemCredenciais)
+        {
+            LogSemChave(app.Logger, null);
+        }
+
         // Verificação do webhook pela Meta (assinatura do campo): devolve o desafio só com o token certo.
         app.MapGet("/whatsapp/webhook", (HttpContext h, OpcoesWhatsApp opcoes) =>
         {

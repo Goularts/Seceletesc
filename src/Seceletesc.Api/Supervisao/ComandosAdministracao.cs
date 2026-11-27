@@ -9,7 +9,8 @@ namespace Seceletesc.Api.Supervisao;
 /// </summary>
 internal static class ComandosAdministracao
 {
-    private static readonly string[] Comandos = ["migrar", "criar-tenant", "criar-supervisor", "alterar-papel", "desativar-supervisor", "registrar-numero", "gerar-chaves"];
+    private static readonly string[] Comandos = ["migrar", "criar-tenant", "criar-supervisor", "alterar-papel", "desativar-supervisor", "registrar-numero", "gerar-chaves",
+        "conectar-conta", "registrar-credencial", "desconectar-conta", "autorizar-operacao", "revogar-operacao", "habilitar-envio", "desabilitar-envio", "gerar-chave-credenciais"];
 
     public static bool EhComando(string arg) => Comandos.Contains(arg, StringComparer.Ordinal);
 
@@ -19,6 +20,11 @@ internal static class ComandosAdministracao
         if (args[0] == "gerar-chaves")
         {
             return GerarChaves(Opcao(args, "--pasta"));
+        }
+
+        if (args[0] == "gerar-chave-credenciais")
+        {
+            return GerarChaveCredenciais(Opcao(args, "--pasta"));
         }
 
         var conexao = Environment.GetEnvironmentVariable("SECELETESC_CONEXAO_DONO");
@@ -47,27 +53,9 @@ internal static class ComandosAdministracao
             case "alterar-papel" when Guid.TryParse(Opcao(args, "--usuario"), out var alvo) && LerPapel(Opcao(args, "--papel")) is { } novoPapel:
                 Console.WriteLine(await AdministracaoSupervisao.AlterarPapelAsync(conexao, alvo, novoPapel).ConfigureAwait(false) ? "Papel alterado." : "Usuário não encontrado.");
                 return 0;
-            case "registrar-numero" when Guid.TryParse(Opcao(args, "--tenant"), out var tenantNumero) && Opcao(args, "--phone-number-id") is { } numero:
-                // O phone_number_id da Meta é numérico; o prefixo "demo-" serve só à demonstração local.
-                if (!System.Text.RegularExpressions.Regex.IsMatch(numero, @"^(\d{5,30}|demo-[a-f0-9]{4,32})$"))
-                {
-                    await Console.Error.WriteLineAsync("phone_number_id inválido: use o identificador numérico da Meta.").ConfigureAwait(false);
-                    return 2;
-                }
-
-                try
-                {
-                    await AdministracaoSupervisao.RegistrarNumeroAsync(conexao, tenantNumero, numero).ConfigureAwait(false);
-                }
-                catch (Npgsql.PostgresException e) when (e.SqlState is Npgsql.PostgresErrorCodes.UniqueViolation or Npgsql.PostgresErrorCodes.ForeignKeyViolation)
-                {
-                    await Console.Error.WriteLineAsync(e.SqlState == Npgsql.PostgresErrorCodes.UniqueViolation
-                        ? "Este número já está ligado a uma empresa." : "Empresa não encontrada.").ConfigureAwait(false);
-                    return 2;
-                }
-
-                Console.WriteLine("Número registrado para a empresa.");
-                return 0;
+            case "registrar-numero" or "conectar-conta" or "registrar-credencial" or "desconectar-conta" or "autorizar-operacao"
+                or "revogar-operacao" or "habilitar-envio" or "desabilitar-envio":
+                return await ComandosPlataforma.ExecutarAsync(args, conexao).ConfigureAwait(false);
             case "desativar-supervisor" when Guid.TryParse(Opcao(args, "--usuario"), out var usuario):
                 Console.WriteLine(await AdministracaoSupervisao.DesativarSupervisorAsync(conexao, usuario).ConfigureAwait(false) ? "Desativado." : "Usuário não encontrado.");
                 return 0;
@@ -79,8 +67,15 @@ internal static class ComandosAdministracao
                       criar-supervisor --tenant <id> --nome "<nome>" [--papel Atendente|Supervisor|Administrador]
                       alterar-papel --usuario <id> --papel Atendente|Supervisor|Administrador
                       desativar-supervisor --usuario <id>
-                      registrar-numero --tenant <id> --phone-number-id <id da Meta>
                       gerar-chaves --pasta <pasta fora do Git>
+                    Operador da plataforma (contas do WhatsApp de cada empresa; ver docs\setup\GUIA-ADMINISTRADOR.md):
+                      conectar-conta --tenant <id> --waba <id> [--business-id <id>] --operador "<nome>"
+                      registrar-credencial --tenant <id> --waba <id> --arquivo <arquivo com o token> --operador "<nome>"
+                      desconectar-conta --tenant <id> --waba <id> --operador "<nome>" --motivo "<motivo>"
+                      registrar-numero --tenant <id> --phone-number-id <id> [--waba <id>] --operador "<nome>"
+                      autorizar-operacao | revogar-operacao --tenant <id> --phone-number-id <id> --operador "<nome>" --motivo "<motivo>"
+                      habilitar-envio | desabilitar-envio --tenant <id> --phone-number-id <id> --operador "<nome>" --motivo "<motivo>"
+                      gerar-chave-credenciais --pasta <pasta fora do Git>
                     """).ConfigureAwait(false);
                 return 2;
         }
@@ -143,6 +138,58 @@ internal static class ComandosAdministracao
         return 0;
     }
 
+    /// <summary>
+    /// Chave que cifra as credenciais do WhatsApp no banco (WhatsApp:ChaveCredenciais). Fica com a API e com o operador
+    /// que registra credenciais; nunca no Git nem no banco. A pasta segue a mesma regra das chaves de dados protegidos.
+    /// </summary>
+    private static int GerarChaveCredenciais(string? pasta)
+    {
+        if (PastaPermitida(pasta) is not { } destino)
+        {
+            Console.Error.WriteLine("Uso: gerar-chave-credenciais --pasta <pasta fora do projeto ou dentro de .local>");
+            return 2;
+        }
+
+        var arquivo = Path.Combine(destino, "chave-credenciais-whatsapp.txt");
+        Directory.CreateDirectory(destino);
+        try
+        {
+            using var f = new FileStream(arquivo, FileMode.CreateNew, FileAccess.Write);
+            using var w = new StreamWriter(f);
+            w.Write(Infraestrutura.Criptografia.CifradorCredenciais.GerarChaveBase64());
+        }
+        catch (IOException)
+        {
+            Console.Error.WriteLine("A pasta já tem uma chave de credenciais: nada foi sobrescrito.");
+            return 2;
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(arquivo, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+
+        Console.WriteLine($"Chave das credenciais: {arquivo}");
+        Console.WriteLine("Grave o conteúdo em WhatsApp:ChaveCredenciais (user-secrets ou variável de ambiente), sem exibir na tela.");
+        return 0;
+    }
+
+    /// <summary>Pasta fora do repositório ou dentro de .local (que não vai para o Git); nulo se não permitida.</summary>
+    internal static string? PastaPermitida(string? pasta)
+    {
+        if (string.IsNullOrWhiteSpace(pasta))
+        {
+            return null;
+        }
+
+        var destino = Path.GetFullPath(pasta);
+        var raiz = EncontrarRaizDoRepositorio();
+        return raiz is not null && destino.StartsWith(raiz, StringComparison.OrdinalIgnoreCase)
+               && !destino.StartsWith(Path.Combine(raiz, ".local"), StringComparison.OrdinalIgnoreCase)
+            ? null
+            : destino;
+    }
+
     private static string? EncontrarRaizDoRepositorio()
     {
         var dir = new DirectoryInfo(Environment.CurrentDirectory);
@@ -158,7 +205,7 @@ internal static class ComandosAdministracao
     private static PapelSupervisao? LerPapel(string? nome) =>
         nome is not null && Enum.GetNames<PapelSupervisao>().Contains(nome, StringComparer.Ordinal) ? Enum.Parse<PapelSupervisao>(nome) : null;
 
-    private static string? Opcao(string[] args, string nome)
+    internal static string? Opcao(string[] args, string nome)
     {
         var i = Array.IndexOf(args, nome);
         return i >= 0 && i + 1 < args.Length && !string.IsNullOrWhiteSpace(args[i + 1]) ? args[i + 1] : null;

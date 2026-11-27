@@ -69,6 +69,31 @@ internal static class RepositorioNucleo
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Número de saída da conversa = número da empresa em que o cliente escreveu por último (M1). Só a mensagem mais nova
+    /// muda o número (uma mensagem antiga que chega fora de ordem não muda): a janela de 24h é contada dela. Chamar
+    /// depois de salvar a conversa, que já guarda a última mensagem do cliente.
+    /// Empate no mesmo segundo (o horário do WhatsApp tem resolução de segundo): vale a última processada. Só troca entre
+    /// números da mesma empresa (chave composta no banco). Revisão da M1, S5.
+    /// </summary>
+    public static async Task AtualizarNumeroDaConversaAsync(NpgsqlConnection c, NpgsqlTransaction tx, Guid conversaId, string? numeroEmpresa, DateTimeOffset recebidaEm, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(numeroEmpresa))
+        {
+            return;
+        }
+
+        await using var cmd = Cmd(c, tx, """
+            update conversas set numero_empresa = @n
+             where id = @id and numero_empresa is distinct from @n
+               and (numero_empresa is null or ultima_mensagem_cliente_em is null or ultima_mensagem_cliente_em <= @em)
+            """);
+        cmd.Parameters.AddWithValue("n", numeroEmpresa);
+        cmd.Parameters.AddWithValue("id", conversaId);
+        cmd.Parameters.AddWithValue("em", recebidaEm);
+        await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
     /// <summary>Grava a mensagem já mascarada. Devolve falso se o wamid já existe (reenvio do webhook).</summary>
     public static async Task<bool> InserirMensagemAsync(
         NpgsqlConnection c, NpgsqlTransaction tx, Guid id, Guid tenantId, Guid conversaId, string direcao, string textoMascarado, string? wamid, DateTimeOffset em, CancellationToken ct)

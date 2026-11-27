@@ -18,7 +18,9 @@ public static class Migrador
 
     public static async Task<IReadOnlyList<string>> AplicarAsync(string connectionString, CancellationToken ct = default)
     {
-        await using var conexao = new NpgsqlConnection(connectionString);
+        // Sessão própria, fora do pool: uma migração pode definir variáveis de sessão (ex.: app.tenant_id na 0007, para
+        // validar chaves estrangeiras sob o RLS) e essa sessão não pode ser reaproveitada por mais ninguém.
+        await using var conexao = new NpgsqlConnection(new NpgsqlConnectionStringBuilder(connectionString) { Pooling = false }.ConnectionString);
         await conexao.OpenAsync(ct).ConfigureAwait(false);
 
         await ExecutarAsync(conexao, null, "set search_path = public, pg_temp", ct).ConfigureAwait(false);

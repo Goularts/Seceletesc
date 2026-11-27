@@ -642,11 +642,12 @@ public sealed class WebhookTestes(BancoFixture banco)
     {
         var tenant = Guid.NewGuid();
         var http = new HttpFalso(HttpStatusCode.OK, """{"messages":[{"id":"wamid.x"}]}""");
-        var gateway = new GatewayWhatsAppCloud(new HttpClient(http),
-            new OpcoesWhatsApp { EnvioHabilitado = true, TokenAcesso = "token", Numeros = { [tenant] = "numero-de-outra-empresa" } },
-            (_, _, _) => Task.FromResult(false));
+        // O cadastro não devolve credencial para número que não é da empresa (M1: credencial_envio, testada com o banco
+        // em ContasWhatsAppTestes): o gateway não chama a Meta.
+        var gateway = new GatewayWhatsAppCloud(new HttpClient(http), new OpcoesWhatsApp { EnvioHabilitado = true },
+            (_, _, _) => Task.FromResult<CredencialEnvio?>(null));
 
-        var r = await gateway.EnviarTextoAsync(tenant, "5511999990000", "Olá", CancellationToken.None);
+        var r = await gateway.EnviarTextoAsync(tenant, "numero-de-outra-empresa", "5511999990000", "Olá", CancellationToken.None);
 
         Assert.Equal(SituacaoEnvio.FalhaDefinitiva, r.Situacao);
         Assert.Null(http.Uri);
@@ -733,9 +734,10 @@ public sealed class WebhookTestes(BancoFixture banco)
     {
         var tenant = Guid.NewGuid();
         var http = new HttpFalso((HttpStatusCode)status, resposta);
-        var gateway = new GatewayWhatsAppCloud(new HttpClient(http), new OpcoesWhatsApp { EnvioHabilitado = true, TokenAcesso = "token", Numeros = { [tenant] = "123" } }, (_, _, _) => Task.FromResult(true));
+        var gateway = new GatewayWhatsAppCloud(new HttpClient(http), new OpcoesWhatsApp { EnvioHabilitado = true },
+            (_, _, _) => Task.FromResult<CredencialEnvio?>(new CredencialEnvio("1234567", "token-de-teste-0123456789")));
 
-        var r = await gateway.EnviarTextoAsync(tenant, "5511999990000", "Olá", CancellationToken.None);
+        var r = await gateway.EnviarTextoAsync(tenant, "123", "5511999990000", "Olá", CancellationToken.None);
 
         Assert.Equal(esperada, r.Situacao);
         using var pedido = JsonDocument.Parse(http.Corpo!);
@@ -748,20 +750,18 @@ public sealed class WebhookTestes(BancoFixture banco)
 
     [Theory]
     [Trait("Regra", "INV-6")]
-    [InlineData(false, "token", true)]
-    [InlineData(true, "", true)]
-    [InlineData(true, "token", false)]
-    public async Task Gateway_real_desligado_ou_sem_configuracao_nao_chama_a_Meta(bool habilitado, string token, bool comNumero)
+    [InlineData(false, "123", true)]
+    [InlineData(true, null, true)]
+    [InlineData(true, "123", false)]
+    public async Task Gateway_real_desligado_ou_sem_configuracao_nao_chama_a_Meta(bool habilitado, string? numeroOrigem, bool comCredencial)
     {
         var tenant = Guid.NewGuid();
         var http = new HttpFalso(HttpStatusCode.OK, """{"messages":[{"id":"wamid.x"}]}""");
-        var opcoes = new OpcoesWhatsApp { EnvioHabilitado = habilitado, TokenAcesso = token };
-        if (comNumero)
-        {
-            opcoes.Numeros[tenant] = "123";
-        }
+        var opcoes = new OpcoesWhatsApp { EnvioHabilitado = habilitado };
+        var credencial = comCredencial ? new CredencialEnvio("1234567", "token-de-teste-0123456789") : null;
 
-        var r = await new GatewayWhatsAppCloud(new HttpClient(http), opcoes, (_, _, _) => Task.FromResult(true)).EnviarTextoAsync(tenant, "5511999990000", "Olá", CancellationToken.None);
+        var r = await new GatewayWhatsAppCloud(new HttpClient(http), opcoes, (_, _, _) => Task.FromResult(credencial))
+            .EnviarTextoAsync(tenant, numeroOrigem, "5511999990000", "Olá", CancellationToken.None);
 
         Assert.Equal(SituacaoEnvio.FalhaDefinitiva, r.Situacao);
         Assert.Null(http.Uri);
@@ -775,6 +775,30 @@ public sealed class WebhookTestes(BancoFixture banco)
 
         Assert.Null(api.Services.GetService<ProcessadorEnvio>());
         Assert.Null(api.Services.GetService<IGatewayWhatsApp>());
+    }
+
+    [Theory]
+    [Trait("Regra", "INV-6")]
+    [InlineData(null)]
+    [InlineData("chave-invalida")]
+    public async Task Envio_ligado_sem_chave_das_credenciais_valida_recusa_tudo_sem_chamar_a_Meta(string? chave)
+    {
+        // Revisão da M1, S2: o trabalhador existe (as mensagens não ficam paradas sem aviso), mas o gateway recusa tudo.
+        using var api = new ApiWhatsApp(banco, TimeProvider.System, envio: true, chaveCredenciais: chave);
+
+        Assert.NotNull(api.Services.GetService<ProcessadorEnvio>());
+        var gateway = Assert.IsType<GatewaySemCredenciais>(api.Services.GetService<IGatewayWhatsApp>());
+        Assert.Equal(SituacaoEnvio.FalhaDefinitiva, (await gateway.EnviarTextoAsync(Guid.NewGuid(), "123456", "5511999990000", "Olá", default)).Situacao);
+    }
+
+    [Fact]
+    [Trait("Regra", "INV-6")]
+    public void Envio_ligado_com_chave_registra_o_gateway_que_le_a_credencial_do_cadastro()
+    {
+        using var api = new ApiWhatsApp(banco, TimeProvider.System, envio: true, chaveCredenciais: Infraestrutura.Criptografia.CifradorCredenciais.GerarChaveBase64());
+
+        Assert.IsType<GatewayWhatsAppCloud>(api.Services.GetService<IGatewayWhatsApp>());
+        Assert.NotNull(api.Services.GetService<RepositorioCredenciaisWhatsApp>());
     }
 
     // ------------------------------------------------------------------ auxiliares
@@ -845,13 +869,19 @@ public sealed class WebhookTestes(BancoFixture banco)
     });
 
     /// <summary>A API real com os papéis da aplicação e o webhook configurado (sem token de envio: nada sai).</summary>
-    private sealed class ApiWhatsApp(BancoFixture banco, TimeProvider relogio, string appSecret = Segredo, bool processamento = true) : WebApplicationFactory<Program>
+    private sealed class ApiWhatsApp(BancoFixture banco, TimeProvider relogio, string appSecret = Segredo, bool processamento = true, bool envio = false, string? chaveCredenciais = null) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             // Processamento ligado (a mensagem vai para a fila da IA), mas sem o trabalhador em segundo plano: os testes
             // tratam a fila quando querem.
             builder.UseSetting("WhatsApp:ProcessamentoHabilitado", processamento ? "true" : "false");
+            builder.UseSetting("WhatsApp:EnvioHabilitado", envio ? "true" : "false");
+            if (chaveCredenciais is not null)
+            {
+                builder.UseSetting("WhatsApp:ChaveCredenciais", chaveCredenciais);
+            }
+
             builder.ConfigureTestServices(s => s.RemoveAll<Microsoft.Extensions.Hosting.IHostedService>());
             builder.UseSetting("ConnectionStrings:Supervisao", banco.ConnectionString("supervisao_teste"));
             builder.UseSetting("ConnectionStrings:App", banco.ConnectionString("app_teste"));

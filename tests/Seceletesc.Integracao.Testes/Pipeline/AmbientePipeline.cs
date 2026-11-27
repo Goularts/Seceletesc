@@ -49,8 +49,12 @@ internal sealed class GatewayFalso : IGatewayWhatsApp
 
     public List<(string WaId, string Texto)> Enviadas { get; } = [];
 
-    public Task<ResultadoEnvio> EnviarTextoAsync(Guid tenantId, string waIdDestino, string texto, CancellationToken ct)
+    /// <summary>Número de origem recebido em cada chamada (M1: o número em que o cliente escreveu por último).</summary>
+    public List<string?> NumerosOrigem { get; } = [];
+
+    public Task<ResultadoEnvio> EnviarTextoAsync(Guid tenantId, string? numeroOrigem, string waIdDestino, string texto, CancellationToken ct)
     {
+        NumerosOrigem.Add(numeroOrigem);
         var r = Respostas.Count > 0 ? Respostas.Dequeue()() : new ResultadoEnvio(SituacaoEnvio.Enviada, "wamid.saida." + Guid.NewGuid(), null);
         if (r.Situacao is SituacaoEnvio.Enviada or SituacaoEnvio.Incerta)
         {

@@ -68,7 +68,7 @@ curl -H "Authorization: Bearer CHAVE" http://localhost:5224/supervisao/conversas
 
 Documento OpenAPI (só em desenvolvimento): `GET /openapi/v1.json`. Exemplos de requisição: `docs/setup/api-local.http`.
 
-Outros comandos: `registrar-numero --tenant ID --phone-number-id ID_DA_META` (liga um número à empresa) e `gerar-chaves --pasta PASTA_FORA_DO_GIT` (chaves de cifragem dos dados protegidos).
+Outros comandos: `gerar-chaves --pasta PASTA_FORA_DO_GIT` (chaves de cifragem dos dados protegidos) e os comandos do operador da plataforma para as contas do WhatsApp de cada empresa (`conectar-conta`, `registrar-credencial`, `registrar-numero`, `autorizar-operacao`, `habilitar-envio` e os inversos; rode o projeto sem argumentos válidos para ver o uso). Roteiro em `docs/setup/GUIA-ADMINISTRADOR.md`, seção B3.
 
 Rotas (todas exigem a chave; o tenant vem do usuário):
 

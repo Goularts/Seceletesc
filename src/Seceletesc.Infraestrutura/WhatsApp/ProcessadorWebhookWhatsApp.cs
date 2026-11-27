@@ -64,9 +64,9 @@ public sealed class ProcessadorWebhookWhatsApp(NpgsqlDataSource dataSourceApp, P
     private async Task<bool> RegistrarAsync(EventoWhatsApp evento, Guid t, CancellationToken ct) =>
             evento switch
             {
-                MensagemTextoWhatsApp m => (await processador.RegistrarAsync(new MensagemRecebida(t, m.WaIdCliente, m.Texto, m.Wamid, m.Em), ct).ConfigureAwait(false)).Resultado
+                MensagemTextoWhatsApp m => (await processador.RegistrarAsync(new MensagemRecebida(t, m.WaIdCliente, m.Texto, m.Wamid, m.Em, m.PhoneNumberId), ct).ConfigureAwait(false)).Resultado
                     != ResultadoProcessamento.Duplicada,
-                MensagemNaoTextoWhatsApp m => await processador.RegistrarNaoTextoAsync(t, m.WaIdCliente, m.Tipo, m.Wamid, m.Em, ct).ConfigureAwait(false)
+                MensagemNaoTextoWhatsApp m => await processador.RegistrarNaoTextoAsync(t, m.WaIdCliente, m.Tipo, m.Wamid, m.Em, m.PhoneNumberId, ct).ConfigureAwait(false)
                     != ResultadoProcessamento.Duplicada,
                 EcoAppWhatsApp e => await processador.RegistrarEcoAsync(t, e.WaIdCliente, e.Texto, e.Tipo, e.Wamid, e.Em, ct).ConfigureAwait(false)
                     != ResultadoProcessamento.Duplicada,

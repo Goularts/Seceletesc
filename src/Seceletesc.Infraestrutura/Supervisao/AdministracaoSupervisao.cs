@@ -25,28 +25,6 @@ public static class AdministracaoSupervisao
         return id;
     }
 
-    /// <summary>
-    /// Liga um número do WhatsApp (phone_number_id da Meta) a uma empresa: é por ele que o webhook descobre a empresa
-    /// de cada mensagem. Um número pertence a uma única empresa.
-    /// </summary>
-    public static async Task RegistrarNumeroAsync(string connectionStringDono, Guid tenantId, string phoneNumberId, CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(phoneNumberId);
-        await using var ds = NpgsqlDataSource.Create(connectionStringDono);
-        // Com registro no histórico da empresa (revisão da F4.5, S6): quem liga um número a uma empresa fica auditado.
-        await new ExecutorTenant(ds).ExecutarAsync(tenantId, async (c, tx, t) =>
-        {
-            await using var cmd = new NpgsqlCommand("""
-                insert into tenant_numeros_whatsapp (phone_number_id, tenant_id) values (@p, @t);
-                insert into eventos_historico (tenant_id, conversa_id, tipo, dados)
-                values (@t, null, 'numero_whatsapp_registrado', jsonb_build_object('phone_number_id', @p::text, 'origem', 'linha de comando'));
-                """, c, tx);
-            cmd.Parameters.AddWithValue("p", phoneNumberId.Trim());
-            cmd.Parameters.AddWithValue("t", tenantId);
-            return await cmd.ExecuteNonQueryAsync(t).ConfigureAwait(false);
-        }, ct).ConfigureAwait(false);
-    }
-
     /// <summary>Cria o usuário e devolve a chave de API. A chave só aparece aqui: o banco guarda o hash.</summary>
     public static async Task<(Guid UsuarioId, string Chave)> CriarSupervisorAsync(
         string connectionStringDono, Guid tenantId, string nome, PapelSupervisao papel = PapelSupervisao.Atendente, CancellationToken ct = default)
