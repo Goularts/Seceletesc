@@ -41,31 +41,39 @@ O que depende de você, em ordem de necessidade. **Nada aqui é obrigatório ago
 - **Como verificar:** `GET /supervisao/conversas` responde 200.
 - **Custo:** nenhum. **Obrigatório agora?** Não.
 
-### B3. Conta da Meta e WhatsApp (quando decidir conectar; pode esperar)
+### B3. Conta da Meta e WhatsApp como Tech Provider (quando decidir conectar; pode esperar)
 
-- **Por quê:** receber e enviar mensagens reais pela WhatsApp Cloud API.
-- **Onde:** Meta Business (https://business.facebook.com) e Meta for Developers (https://developers.facebook.com/apps). Guia oficial: https://developers.facebook.com/docs/whatsapp/cloud-api/get-started
-- **Passo a passo:**
-  1. Crie ou use o portfólio empresarial em business.facebook.com e faça a verificação da empresa (Configurações > Central de segurança).
-  2. Em developers.facebook.com/apps, crie um app do tipo "Business" e adicione o produto **WhatsApp**.
-  3. Use primeiro o **número de teste** que a Meta oferece no próprio app (não use o número real ainda).
-  4. Crie um **usuário do sistema** (Configurações do negócio > Usuários do sistema) com as permissões `whatsapp_business_messaging` e `whatsapp_business_management` e gere um token permanente.
-  5. Anote, **sem enviar para ninguém**: o App Secret (Configurações do app > Básico), o token do usuário do sistema e o `phone_number_id` do número de teste.
-- **Onde configurar no projeto (no seu terminal, nunca no chat):** use o CMD (o PowerShell grava o histórico de comandos em arquivo). Para cada segredo, o valor é colado num prompt e não fica escrito no comando:
+- **Por quê:** a Seceletesc atende várias empresas (decisão 34). Ela tem **um app** na Meta; cada empresa cliente conecta a **própria** conta do WhatsApp (WABA) e os próprios números, e o sistema guarda uma credencial (business token) por cliente, cifrada.
+- **Onde:** Meta Business (https://business.facebook.com) e Meta for Developers (https://developers.facebook.com/apps). Guias oficiais: https://developers.facebook.com/docs/whatsapp/solution-providers/get-started-for-tech-providers e https://developers.facebook.com/docs/whatsapp/embedded-signup/overview
+- **Passo a passo (plataforma, uma vez):**
+  1. No portfólio empresarial da Seceletesc (business.facebook.com), faça a **verificação da empresa**. Ela corre em paralelo e não bloqueia o desenvolvimento, mas é exigida para virar Tech Provider.
+  2. Em developers.facebook.com/apps, crie um app do tipo "Business" e adicione o produto **WhatsApp**. Comece pelo **número de teste** do próprio app.
+  3. Depois da verificação, peça na **App Review** o acesso avançado a `whatsapp_business_messaging` e `whatsapp_business_management` (a Meta pede vídeo do envio de mensagem e da criação de template). Sem isso, nenhum cliente pode ser cadastrado.
+  4. Limite da Meta: até 10 clientes novos a cada 7 dias até concluir verificação, App Review e verificação de acesso (depois, 200). O cliente paga as mensagens diretamente à Meta (forma de pagamento no WhatsApp Manager dele).
+- **Segredos da plataforma (no seu terminal, nunca no chat):** use o CMD (o PowerShell grava o histórico de comandos em arquivo). O valor é colado num prompt e não fica escrito no comando:
   ```cmd
   cd C:\dev\Seceletesc
-  set /p VALOR=Cole o App Secret e tecle Enter: 
+  set /p VALOR=Cole o App Secret e tecle Enter:
   dotnet user-secrets set "WhatsApp:AppSecret" "%VALOR%" --project src\Seceletesc.Api
-  set /p VALOR=Cole o token do usuario do sistema e tecle Enter: 
-  dotnet user-secrets set "WhatsApp:TokenAcesso" "%VALOR%" --project src\Seceletesc.Api
   set VALOR=
   ```
   Token de verificação do webhook: gere um valor aleatório (`node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"`) e grave do mesmo jeito em `WhatsApp:TokenVerificacao`; o mesmo valor vai no campo "Verify token" do app da Meta.
-  Os user-secrets ficam em texto na sua pasta de usuário (`%APPDATA%\Microsoft\UserSecrets`): servem só para desenvolvimento. Em produção, use as variáveis de ambiente ou o cofre do provedor.
-  O `phone_number_id` não é segredo: registre-o com `dotnet run --project src\Seceletesc.Api -- registrar-numero --tenant ID_DA_EMPRESA --phone-number-id ID_DA_META`.
+  Chave que cifra as credenciais dos clientes no banco: gere com `dotnet run --project src\Seceletesc.Api -- gerar-chave-credenciais --pasta C:\seceletesc-chaves` e grave o conteúdo do arquivo em `WhatsApp:ChaveCredenciais`, sem exibir na tela:
+  ```cmd
+  set /p VALOR=<C:\seceletesc-chaves\chave-credenciais-whatsapp.txt
+  dotnet user-secrets set "WhatsApp:ChaveCredenciais" "%VALOR%" --project src\Seceletesc.Api
+  set VALOR=
+  ```
+  Os user-secrets ficam em texto na sua pasta de usuário (`%APPDATA%\Microsoft\UserSecrets`): servem só para desenvolvimento. Em produção, use as variáveis de ambiente ou o cofre do provedor. Sem a chave, as credenciais gravadas não podem ser lidas: guarde uma cópia em local seguro.
+- **Cada empresa cliente (operador da plataforma, pela linha de comando; com a M3, pelo Embedded Signup).** São três etapas separadas, e cada uma fica no histórico da empresa com o operador e o motivo (o nome do operador é o informado no comando: ainda não é comprovado; a autenticação do operador vem antes de número real). **Antes de registrar**, confira no WhatsApp Manager da Meta que o número e o token são mesmo da WABA daquela empresa: o sistema ainda não confere isso sozinho (vem com a M3):
+  1. **Conexão:** `conectar-conta --tenant ID --waba ID_DA_WABA --operador "Seu nome"`; `registrar-credencial --tenant ID --waba ID_DA_WABA --arquivo CAMINHO_DO_ARQUIVO_COM_O_TOKEN --operador "Seu nome"` (o token fica num arquivo que você mesmo cria e **apaga logo depois**; ele nunca vai na linha de comando nem aparece na tela); e `registrar-numero --tenant ID --phone-number-id ID_DO_NUMERO --waba ID_DA_WABA --operador "Seu nome"`.
+  2. **Autorização operacional:** `autorizar-operacao --tenant ID --phone-number-id ID_DO_NUMERO --operador "Seu nome" --motivo "..."`.
+  3. **Ativação do envio:** `habilitar-envio --tenant ID --phone-number-id ID_DO_NUMERO --operador "Seu nome" --motivo "..."`. Só é aceita com as etapas 1 e 2 cumpridas. **Nada sai** enquanto `WhatsApp:EnvioHabilitado` estiver desligado na API.
+
+  Os comandos rodam com `dotnet run --project src\Seceletesc.Api -- COMANDO ...` e a variável `SECELETESC_CONEXAO_DONO`. Para desfazer: `desabilitar-envio`, `revogar-operacao` (também desliga o envio) e `desconectar-conta` (revoga a credencial, a autorização operacional e o envio dos números; ao reconectar, as três etapas são refeitas).
 - **Como verificar:** depois do item B4, a Meta valida a URL do webhook (ela chama `GET /whatsapp/webhook` e recebe o desafio).
-- **Custo:** criar a conta e o app não custa nada. As mensagens têm preço definido pela Meta: consulte a tabela oficial em https://developers.facebook.com/docs/whatsapp/pricing antes de usar números reais.
-- **Obrigatório agora?** Não. **O envio continua desligado** até sua autorização explícita (`WhatsApp:EnvioHabilitado`).
+- **Custo:** criar a conta e o app não custa nada. As mensagens têm preço definido pela Meta e são pagas pelo cliente: tabela oficial em https://developers.facebook.com/docs/whatsapp/pricing
+- **Obrigatório agora?** Não. **O envio continua desligado** até sua autorização explícita (`WhatsApp:EnvioHabilitado` e, por número, `habilitar-envio`).
 
 ### B4. Hospedagem com HTTPS (quando decidir publicar; pode esperar)
 
@@ -97,7 +105,7 @@ O que depende de você, em ordem de necessidade. **Nada aqui é obrigatório ago
 |---|---|---|---|
 | C1 | Provedor de IA (F5) | Sem ele, nenhuma resposta automática | Nenhum: tudo vai para humano |
 | C2 | Assuntos que a IA responde sozinha no piloto e o conhecimento inicial | Define o que o chatbot pode dizer | Nenhum assunto configurado |
-| C3 | Coexistência (app + API) ou só API | Muda como o humano responde e a retomada fora da janela | Sem coexistência: nada sai fora da janela; aguarda o cliente |
+| C3 | Coexistência (app + API) ou só API | Muda como o humano responde e a retomada fora da janela | Desligada por ora (decisão 34b): nada sai fora da janela; aguarda o cliente |
 | C4 | Fluxo de templates para retomada fora da janela | Hoje proibido | Proibido |
 | C5 | Autenticação de produção (como as pessoas entram no painel) | Pré-requisito para publicar | Chave de API de desenvolvimento |
 | C6 | Retenção de dados e LGPD (quanto tempo guardar histórico e dados cifrados) | Obrigação legal | Não definido |

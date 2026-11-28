@@ -1,16 +1,16 @@
 # Integração com o WhatsApp: requisitos antes de conectar o número real
 
-**Status:** F4 implementada sem número real (webhook, fila da IA, eco, status, gateway desligado). Nenhum número real conectado e nenhuma mensagem externa enviada. Conectar exige autorização explícita do Victor (decisão 31).
+**Status:** F4 e M1 implementadas sem número real (webhook, fila da IA, eco, status; contas, credenciais e números por empresa, decisão 34; gateway desligado). Nenhum número real conectado e nenhuma mensagem externa enviada. Conectar exige autorização explícita do Victor (decisões 31 e 34).
 
 ## 1. O que precisa ser decidido ou fornecido pelo Victor
 
 | # | Item | Por quê | Quem |
 |---|---|---|---|
 | 1 | **Portfólio empresarial na Meta** (Business Manager) verificado | exigido para usar a Cloud API em produção | Victor |
-| 2 | **Conta do WhatsApp Business (WABA)** e o número que será usado | o número que o cliente já conhece | Victor |
-| 3 | **Caminho de cadastro do número** (ver seção 2): coexistência (app + API) ou só API | muda como o humano responde e como funciona a retomada fora da janela | Victor |
+| 2 | **Conta do WhatsApp Business (WABA)** e os números de cada empresa cliente | os números que os clientes já conhecem | cada empresa cliente, cadastrada por um operador da plataforma |
+| 3 | **Caminho de cadastro do número** (ver seção 2) | coexistência (app + API) **desligada por ora** (decisão 34b), sem impedir a implementação futura | decidido |
 | 4 | **App da Meta** (developers.facebook.com) com o produto WhatsApp | gera o App Secret (assinatura do webhook) e recebe o webhook | equipe, com acesso do Victor |
-| 5 | **Usuário de sistema e token permanente** com `whatsapp_business_messaging` e `whatsapp_business_management` | o envio pela API; o token fica só no ambiente do servidor | Victor gera; nunca vai para o Git |
+| 5 | **Acesso avançado** a `whatsapp_business_messaging` e `whatsapp_business_management` (App Review) e um **business token por empresa cliente** | Tech Provider usa só business tokens; cada um fica cifrado no banco, com a chave fora do banco (M1) | Victor pede o acesso; o token de cada cliente é registrado pelo operador (`GUIA-ADMINISTRADOR.md`, B3); nunca vai para o Git |
 | 6 | **Hospedagem com HTTPS público** para o webhook e a API de supervisão | a Meta só chama URL HTTPS; a supervisão exige HTTPS (decisão 30) | infraestrutura externa: decisão do Victor |
 | 7 | **Número de teste da Meta** para a primeira conexão | testar ponta a ponta sem cliente real | equipe, com autorização do Victor |
 | 8 | **Autenticação de produção** da API de supervisão | pré-requisito para expor a API (decisão 30) | decisão pendente |
@@ -47,14 +47,14 @@ Nenhum destes valores vai para o Git. Em desenvolvimento: user-secrets; em produ
 |---|---|
 | `WhatsApp:AppSecret` | verificar a assinatura `X-Hub-Signature-256` de cada webhook |
 | `WhatsApp:TokenVerificacao` | responder ao desafio de verificação do webhook (GET) |
-| `WhatsApp:TokenAcesso` | token permanente do usuário de sistema, usado só pelo gateway de envio |
-| `WhatsApp:EnvioHabilitado` | desligado por padrão: sem ele, nada sai para a Meta |
+| `WhatsApp:ChaveCredenciais` | chave (base64, 32 bytes) que cifra no banco a credencial (business token) de cada empresa; sem ela, nenhum envio é registrado (M1, decisão 34) |
+| `WhatsApp:EnvioHabilitado` | interruptor geral, desligado por padrão: sem ele, nada sai para a Meta. Cada número também precisa de autorização operacional e envio habilitado por um operador |
 | `WhatsApp:ProcessamentoHabilitado` | liga o trabalhador da fila da IA (até a F5, tudo vai para supervisão) |
-| `WhatsApp:Numeros:{id da empresa}` | `phone_number_id` de origem da empresa, usado pelo gateway |
+| Conta (WABA), credencial e números | por empresa, no banco, pelos comandos do operador da plataforma (`GUIA-ADMINISTRADOR.md`, B3). A resposta sai pelo número em que o cliente escreveu por último |
 | `ConnectionStrings:App` e `ConnectionStrings:Worker` | papéis `seceletesc_app` (webhook, IA) e `seceletesc_worker` (envio) |
 | `DadosProtegidos:ChavePublicaPem` | chave pública para cifrar dados protegidos; sem ela, o webhook não registra mensagens |
 | Campos assinados no webhook | `messages` (mensagens e status) e, com coexistência, `smb_message_echoes` |
-| `tenant_numeros_whatsapp` | liga o `phone_number_id` do número à empresa (cadastro pelo administrador do banco) |
+| `tenant_numeros_whatsapp` | liga o `phone_number_id` à empresa e à WABA, com a autorização operacional e o envio de cada número |
 
 ## 4a. Pré-requisitos de operação (revisão da F4)
 

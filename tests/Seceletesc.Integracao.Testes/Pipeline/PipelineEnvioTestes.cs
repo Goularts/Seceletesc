@@ -475,7 +475,7 @@ internal sealed class GatewayLento : IGatewayWhatsApp
 {
     public bool Cancelado { get; private set; }
 
-    public async Task<ResultadoEnvio> EnviarTextoAsync(Guid tenantId, string waIdDestino, string texto, CancellationToken ct)
+    public async Task<ResultadoEnvio> EnviarTextoAsync(Guid tenantId, string? numeroOrigem, string waIdDestino, string texto, CancellationToken ct)
     {
         try
         {

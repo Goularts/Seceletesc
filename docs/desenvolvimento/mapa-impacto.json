@@ -67,12 +67,20 @@
       "testes": ["tests/Seceletesc.Integracao.Testes/Supervisao/", "tests/Seceletesc.Integracao.Testes/Conhecimento/"]
     },
     {
+      "padrao": "src/Seceletesc.Infraestrutura/Criptografia/",
+      "nome": "cifragem de dados protegidos e credenciais",
+      "regras": ["INV-10", "INV-23"],
+      "componentes": ["dados-protegidos", "credenciais"],
+      "revisores": ["seguranca"],
+      "testes": ["tests/Seceletesc.Integracao.Testes/WhatsApp/ContasWhatsAppTestes.cs"]
+    },
+    {
       "padrao": "src/Seceletesc.Infraestrutura/WhatsApp/",
       "nome": "integração WhatsApp (webhook e gateway)",
       "regras": ["INV-6", "INV-10", "INV-14", "INV-24"],
       "componentes": ["webhook", "gateway"],
       "revisores": ["seguranca", "guardiao-regras"],
-      "testes": ["tests/Seceletesc.Integracao.Testes/WhatsApp/WebhookTestes.cs"]
+      "testes": ["tests/Seceletesc.Integracao.Testes/WhatsApp/WebhookTestes.cs", "tests/Seceletesc.Integracao.Testes/WhatsApp/ContasWhatsAppTestes.cs"]
     },
     {
       "padrao": "src/Seceletesc.Api/",

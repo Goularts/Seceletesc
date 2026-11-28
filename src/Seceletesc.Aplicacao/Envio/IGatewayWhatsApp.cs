@@ -23,6 +23,7 @@ public sealed record ResultadoEnvio(SituacaoEnvio Situacao, string? Wamid, strin
 /// </summary>
 public interface IGatewayWhatsApp
 {
-    /// <param name="tenantId">Empresa dona da conversa: define o número de origem (o mesmo que o cliente conhece).</param>
-    Task<ResultadoEnvio> EnviarTextoAsync(Guid tenantId, string waIdDestino, string texto, CancellationToken ct);
+    /// <param name="tenantId">Empresa dona da conversa.</param>
+    /// <param name="numeroOrigem">phone_number_id em que o cliente escreveu por último (o número que ele conhece). Sem ele, nada sai.</param>
+    Task<ResultadoEnvio> EnviarTextoAsync(Guid tenantId, string? numeroOrigem, string waIdDestino, string texto, CancellationToken ct);
 }

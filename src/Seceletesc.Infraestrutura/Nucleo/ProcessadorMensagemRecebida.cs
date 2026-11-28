@@ -9,7 +9,8 @@ using Seceletesc.Infraestrutura.Criptografia;
 
 namespace Seceletesc.Infraestrutura.Nucleo;
 
-public sealed record MensagemRecebida(Guid TenantId, string WaIdCliente, string Texto, string Wamid, DateTimeOffset RecebidaEm);
+/// <param name="NumeroEmpresa">phone_number_id que recebeu a mensagem (o número da empresa que o cliente usou). Define o número de saída.</param>
+public sealed record MensagemRecebida(Guid TenantId, string WaIdCliente, string Texto, string Wamid, DateTimeOffset RecebidaEm, string? NumeroEmpresa = null);
 
 public enum ResultadoProcessamento
 {
@@ -106,6 +107,7 @@ public sealed class ProcessadorMensagemRecebida(
 
             conversa.RegistrarMensagemDoCliente(msg.RecebidaEm);
             await RepositorioNucleo.SalvarConversaAsync(c, tx, conversa, t).ConfigureAwait(false);
+            await RepositorioNucleo.AtualizarNumeroDaConversaAsync(c, tx, conversa.Id, msg.NumeroEmpresa, msg.RecebidaEm, t).ConfigureAwait(false);
             await RepositorioNucleo.InserirEventoAsync(c, tx, msg.TenantId, conversa.Id, "mensagem_recebida",
                 new { mensagem = mensagemId, dados_protegidos = mascarado.Ocorrencias.Select(o => o.Categoria.ToString()) }, t).ConfigureAwait(false);
 
@@ -304,7 +306,7 @@ public sealed class ProcessadorMensagemRecebida(
     /// Mensagem que não é texto (mídia, áudio, localização, reação...). Padrão do plano (lacuna funcional): a IA não
     /// trata; a mensagem fica registrada (só o tipo, nunca o conteúdo) e a conversa vai para supervisão.
     /// </summary>
-    public Task<ResultadoProcessamento> RegistrarNaoTextoAsync(Guid tenantId, string waIdCliente, string tipo, string wamid, DateTimeOffset recebidaEm, CancellationToken ct = default) =>
+    public Task<ResultadoProcessamento> RegistrarNaoTextoAsync(Guid tenantId, string waIdCliente, string tipo, string wamid, DateTimeOffset recebidaEm, string? numeroEmpresa = null, CancellationToken ct = default) =>
         _executor.ExecutarAsync(tenantId, async (c, tx, t) =>
         {
             var cliente = await RepositorioNucleo.ObterOuCriarClienteAsync(c, tx, tenantId, waIdCliente, t).ConfigureAwait(false);
@@ -329,11 +331,13 @@ public sealed class ProcessadorMensagemRecebida(
             if (conversa.Estado != Dominio.Conversas.EstadoConversa.Automatico)
             {
                 await RepositorioNucleo.SalvarConversaAsync(c, tx, conversa, t).ConfigureAwait(false);
+                await RepositorioNucleo.AtualizarNumeroDaConversaAsync(c, tx, conversa.Id, numeroEmpresa, recebidaEm, t).ConfigureAwait(false);
                 return ResultadoProcessamento.SemAcaoDaIa;
             }
 
             var politica = await RepositorioNucleo.ObterPoliticaVigenteAsync(c, tx, tenantId, t).ConfigureAwait(false);
             await TransferirAsync(c, tx, conversa, politica, "mensagem_nao_textual:" + tipoSeguro, t).ConfigureAwait(false);
+            await RepositorioNucleo.AtualizarNumeroDaConversaAsync(c, tx, conversa.Id, numeroEmpresa, recebidaEm, t).ConfigureAwait(false);
             return ResultadoProcessamento.Transferida;
         }, ct);
 

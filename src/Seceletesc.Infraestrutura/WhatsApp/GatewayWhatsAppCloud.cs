@@ -9,48 +9,69 @@ namespace Seceletesc.Infraestrutura.WhatsApp;
 /// <summary>Configuração da integração com a Cloud API. Nada aqui vai para o Git (user-secrets ou variáveis de ambiente).</summary>
 public sealed class OpcoesWhatsApp
 {
-    /// <summary>Desligado por padrão: sem autorização do Victor, nada sai para a Meta (decisão 31).</summary>
+    /// <summary>
+    /// Interruptor geral, desligado por padrão: sem autorização do Victor, nada sai para a Meta (decisões 31 e 34). Mesmo
+    /// ligado, cada número precisa da autorização operacional e do envio habilitado por um operador (decisão 34c).
+    /// </summary>
     public bool EnvioHabilitado { get; set; }
 
     /// <summary>Liga o trabalhador da fila da IA. Até a F5, o motor é indisponível: tudo vai para supervisão.</summary>
     public bool ProcessamentoHabilitado { get; set; }
 
-    public string? TokenAcesso { get; set; }
-
+    /// <summary>App Secret do app da plataforma (um só para todos os clientes): confere a assinatura dos webhooks.</summary>
     public string? AppSecret { get; set; }
 
     public string? TokenVerificacao { get; set; }
 
-    public string VersaoGraph { get; set; } = "v23.0";
+    /// <summary>
+    /// Chave (base64, 32 bytes) que cifra as credenciais de cada empresa no banco. Sem ela, nenhuma credencial é lida e o
+    /// envio não é registrado. As credenciais (business tokens) ficam no banco, cifradas, uma por WABA.
+    /// </summary>
+    public string? ChaveCredenciais { get; set; }
 
-    /// <summary>phone_number_id de origem por empresa (o número que o cliente conhece).</summary>
-    public Dictionary<Guid, string> Numeros { get; set; } = [];
+    /// <summary>Versão da Graph API. Os exemplos atuais da documentação usam a v27.0; reconfirmar antes da M3.</summary>
+    public string VersaoGraph { get; set; } = "v27.0";
 }
 
 /// <summary>
-/// Gateway real (plano técnico, seção 4.4): único componente com a credencial de envio. Só envia texto simples, sem
-/// prévia de link, sem botões, listas ou templates (invariantes 1 e 24). Classificação conservadora do resultado: na
-/// dúvida, Incerta (nunca repetida), para não enviar duas vezes.
+/// Gateway real (plano técnico, seções 4.4 e 4.13): único componente que chama a Meta para enviar. Só envia texto
+/// simples, sem prévia de link, sem botões, listas ou templates (invariantes 1 e 24). Sai pelo número em que o cliente
+/// escreveu, com a credencial da empresa dona desse número, e só se o banco confirmar as três etapas do número.
+/// Classificação conservadora do resultado: na dúvida, Incerta (nunca repetida), para não enviar duas vezes.
 /// </summary>
-public sealed class GatewayWhatsAppCloud(HttpClient http, OpcoesWhatsApp opcoes, Func<Guid, string, CancellationToken, Task<bool>> numeroDaEmpresa) : IGatewayWhatsApp
+public sealed class GatewayWhatsAppCloud(HttpClient http, OpcoesWhatsApp opcoes, Func<Guid, string, CancellationToken, Task<CredencialEnvio?>> credencialDoNumero) : IGatewayWhatsApp
 {
-    public async Task<ResultadoEnvio> EnviarTextoAsync(Guid tenantId, string waIdDestino, string texto, CancellationToken ct)
+    public async Task<ResultadoEnvio> EnviarTextoAsync(Guid tenantId, string? numeroOrigem, string waIdDestino, string texto, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(http);
         ArgumentNullException.ThrowIfNull(opcoes);
-        if (!opcoes.EnvioHabilitado || string.IsNullOrEmpty(opcoes.TokenAcesso) || !opcoes.Numeros.TryGetValue(tenantId, out var numero))
+        ArgumentNullException.ThrowIfNull(credencialDoNumero);
+        if (!opcoes.EnvioHabilitado || string.IsNullOrEmpty(numeroOrigem))
         {
             // Definitiva: a mensagem é cancelada e a supervisão é acionada; nada sai sem configuração completa.
-            return new ResultadoEnvio(SituacaoEnvio.FalhaDefinitiva, null, "envio desabilitado ou número da empresa não configurado");
+            return new ResultadoEnvio(SituacaoEnvio.FalhaDefinitiva, null, "envio desabilitado ou conversa sem número de origem");
         }
 
-        // O número configurado precisa ser desta empresa no mesmo cadastro que resolve a entrada (revisão da F4, S3).
-        ArgumentNullException.ThrowIfNull(numeroDaEmpresa);
-        if (!await numeroDaEmpresa(tenantId, numero, ct).ConfigureAwait(false))
+        // A credencial vem do cadastro da empresa dona do número (revisão da F4, S3; M1): número de outra empresa, sem
+        // autorização operacional, com envio desligado, conta desconectada ou credencial revogada não envia.
+        CredencialEnvio? credencial;
+        try
         {
-            return new ResultadoEnvio(SituacaoEnvio.FalhaDefinitiva, null, "número configurado não pertence à empresa");
+            credencial = await credencialDoNumero(tenantId, numeroOrigem, ct).ConfigureAwait(false);
+        }
+#pragma warning disable CA1031 // Falha antes de qualquer chamada à Meta: com certeza não saiu (não é incerta).
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+            return new ResultadoEnvio(SituacaoEnvio.NaoEnviada, null, "falha ao ler a credencial do número");
         }
 
+        if (credencial is null)
+        {
+            return new ResultadoEnvio(SituacaoEnvio.FalhaDefinitiva, null, "número sem envio autorizado nesta empresa ou sem credencial vigente");
+        }
+
+        var numero = numeroOrigem;
         using var pedido = new HttpRequestMessage(HttpMethod.Post, new Uri("https://graph.facebook.com/" + opcoes.VersaoGraph + "/" + Uri.EscapeDataString(numero) + "/messages"))
         {
             Content = JsonContent.Create(new
@@ -62,7 +83,7 @@ public sealed class GatewayWhatsAppCloud(HttpClient http, OpcoesWhatsApp opcoes,
                 text = new { preview_url = false, body = texto },
             }),
         };
-        pedido.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", opcoes.TokenAcesso);
+        pedido.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", credencial.Token);
 
         HttpResponseMessage resposta;
         try

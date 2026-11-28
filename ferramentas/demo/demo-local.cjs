@@ -72,15 +72,20 @@ async function main() {
 
   rodar('dotnet', ['build', 'src/Seceletesc.Api', '-v', 'q']);
   cli('migrar');
-  passo('Migrações aplicadas', '0001 a 0006');
+  passo('Migrações aplicadas', '0001 a 0008');
 
   const tenant = cli('criar-tenant', '--nome', 'Empresa de demonstração').trim().split('\n').pop().trim();
   const saidaAdmin = cli('criar-supervisor', '--tenant', tenant, '--nome', 'Administrador da demo', '--papel', 'Administrador');
   const chave = /chave:\s+(\S+)/.exec(saidaAdmin)[1];
   const numero = 'demo-' + crypto.randomBytes(4).toString('hex');
-  cli('registrar-numero', '--tenant', tenant, '--phone-number-id', numero);
+  const waba = 'demo-' + crypto.randomBytes(4).toString('hex');
+  // Operador da plataforma (decisão 34): conecta a conta simulada, liga o número e autoriza a operação. O envio do
+  // número fica desligado (nenhuma credencial é registrada na demonstração).
+  cli('conectar-conta', '--tenant', tenant, '--waba', waba, '--operador', 'Operador da demo');
+  cli('registrar-numero', '--tenant', tenant, '--phone-number-id', numero, '--waba', waba, '--operador', 'Operador da demo');
+  cli('autorizar-operacao', '--tenant', tenant, '--phone-number-id', numero, '--operador', 'Operador da demo', '--motivo', 'demonstração local');
   cli('gerar-chaves', '--pasta', PASTA);
-  passo('Empresa de demonstração criada', `tenant ${tenant}, número simulado ${numero}, administrador (chave não exibida)`);
+  passo('Empresa de demonstração criada', `tenant ${tenant}, conta simulada ${waba}, número simulado ${numero} (operação autorizada, envio desligado), administrador (chave não exibida)`);
 
   const api = spawn('dotnet', ['run', '--no-build', '--project', 'src/Seceletesc.Api', '--urls', URL], {
     cwd: RAIZ, shell: false, stdio: 'ignore',
@@ -95,7 +100,7 @@ async function main() {
       WhatsApp__ProcessamentoHabilitado: 'true',
       // O envio fica desligado mesmo que o administrador tenha configurado credenciais reais em user-secrets.
       WhatsApp__EnvioHabilitado: 'false',
-      WhatsApp__TokenAcesso: '',
+      WhatsApp__ChaveCredenciais: '',
       DadosProtegidos__ChavePublicaPem: fs.readFileSync(path.join(PASTA, 'dados-protegidos-publica.pem'), 'utf8'),
     },
   });

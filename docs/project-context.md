@@ -2,7 +2,7 @@
 
 ## Objetivo
 
-Plataforma de atendimento inteligente por WhatsApp (Seceletesc), em C#/.NET e PostgreSQL, com WhatsApp Cloud API, motor de IA desacoplado, API e painel de supervisão humana, histórico estruturado e governança de conhecimento. Começa com uma empresa e é preparada para multi-tenant.
+Plataforma de atendimento inteligente por WhatsApp (Seceletesc), em C#/.NET e PostgreSQL, com WhatsApp Cloud API, motor de IA desacoplado, API e painel de supervisão humana, histórico estruturado e governança de conhecimento. SaaS multi-tenant (decisão 34): cada empresa cliente conecta a própria conta do WhatsApp (WABA) e os próprios números, com a Seceletesc operando como Independent Tech Provider da Meta.
 
 **O objetivo:** autonomia no desenvolvimento e controle rigoroso do comportamento do chatbot ao atender clientes reais. O projeto pode evoluir tecnicamente; o chatbot não pode inventar, vazar informações, extrapolar autorizações ou responder fora do contexto.
 
@@ -58,6 +58,7 @@ Resumo numerado das regras A e B: `docs/business-rules/invariants.md`.
 31. WhatsApp (2026-11-25, pós-F3): não presumir coexistência (app + Cloud API); alternativa é o atendimento humano pelo painel ligado à API, sempre com o mesmo número. Nenhum número real conectado nem mensagem externa enviada sem autorização do Victor.
 32. Decisões da F4 (2026-11-25, F4.5): sem coexistência, nada é enviado fora da janela até existir fluxo de templates autorizado (aguarda o cliente); INT e RES nunca divulgados automaticamente; atendente assume pela fila ou por atribuição autorizada; liberar não apaga histórico nem pendências externas; conhecimento aprovado é reavaliado pela nova política de validade, sem exclusão silenciosa; endereço institucional pode ser PUB aprovado, endereço de cliente é protegido; mensagens consecutivas podem ser agrupadas; fora de ordem são reconciliadas, ambiguidades vão à supervisão; atraso gera monitoramento e escalonamento com limites configuráveis; falha de entrega gera registro e supervisão; reações são registradas sem intervenção. Sem regras que gerem transferências desnecessárias.
 33. Ambiente (2026-11-25, F4.5): nada contratado por enquanto; demonstração local e checklist de configuração (`docs/setup/GUIA-ADMINISTRADOR.md`). O Ruflo faz parte da estratégia e não deve ser removido.
+34. SaaS multi-tenant como Independent Tech Provider (2026-11-27): cada empresa cliente tem a própria WABA, os próprios números e a própria credencial (business token), isolados por empresa. A verificação empresarial da Meta corre em paralelo e não bloqueia o desenvolvimento. (a) No início, só **operadores da plataforma** cadastram e ativam clientes; autocadastro fica para depois. (b) Coexistência com o WhatsApp Business App continua desligada, sem impedir a implementação futura. (c) Todo número fica com o envio **desligado** até autorização explícita de um operador. (d) Conexão da WABA, autorização operacional e ativação do envio são etapas separadas. (e) Envio com resultado incerto nunca é repetido; só há nova tentativa quando a repetição é comprovadamente segura. (f) Nenhuma conexão ou envio real durante o desenvolvimento. Plano em `docs/desenvolvimento/plano-tecnico.md`, seção 4.13.
 
 ## Etapa atual
 
@@ -72,7 +73,7 @@ Não presumir. Decisões puramente técnicas (estrutura da solução, estratégi
 - Quais fontes, além do conhecimento aprovado, são autorizadas (ex.: sistemas da empresa).
 - Escopo de atendimento autorizado inicial (assuntos da primeira empresa).
 - Política de retenção, auditoria e LGPD.
-- Autenticação e usuários da API e do painel de supervisão. (Em desenvolvimento: chave de API por usuário, com papel, criada por linha de comando. Produção: a definir.)
+- Autenticação e usuários da API e do painel de supervisão. (Em desenvolvimento: chave de API por usuário, com papel, criada por linha de comando. Produção: a definir.) Inclui a **autenticação do operador da plataforma** (decisão 34a): hoje o operador age pela linha de comando com a conexão do dono e o nome registrado no histórico é declarado, não comprovado; pré-requisito antes de número real (M3).
 - Retomada após liberação: a IA responde mensagens recebidas durante o controle humano? (Padrão no plano: não.)
 - Endereço particular sem CEP (ex.: "Rua X, 100") não é detectado como dado protegido: entra como texto. Ampliar o detector para endereços? (limite registrado na F4.5)
 - Mensagem que chega depois da liberação com horário anterior a ela: hoje é registrada e a IA não a trata (não pertence ao período da IA), sem acionar ninguém. Acionar a supervisão nesse caso? (F4.5)
@@ -81,4 +82,7 @@ Não presumir. Decisões puramente técnicas (estrutura da solução, estratégi
 - Cliente identificado pelo telefone: como tratar número compartilhado ou reciclado?
 - Categorias de dados protegidos (criptografados e ocultos da IA). Padrão técnico inicial: CPF, CNPJ, RG, cartão de pagamento, e-mail, CEP/endereço. O Victor pode ampliar.
 - Quem pode ver dados protegidos no painel.
+- Empresa com vários números (M1): hoje a conversa é uma por cliente na empresa e a resposta (da IA ou humana) sai pelo número em que o cliente escreveu por último. Conversa por cliente ou por número? Por qual número a resposta sai? (revisão da M1, G1)
+- Mensagem recebida em número sem autorização operacional, com envio desligado ou com a conta desconectada: hoje é registrada e tratada normalmente; a resposta é cancelada no envio e a conversa vai para supervisão. A IA deve processar essas mensagens? (revisão da M1, G2/S6; atenção à decisão 32 sobre transferências desnecessárias)
+- Desconectar a conta (WABA) revoga também a autorização operacional dos números (padrão conservador adotado na M1): ao reconectar, a autorização é refeita. Manter? (revisão da M1, S4/G8)
 - Finalidade para dados de identificação (CPF etc.): qual fluxo definirá finalidade, autorização, acesso e retenção? Até lá, bloqueados (decisão 26).

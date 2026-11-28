@@ -136,7 +136,7 @@ Limite assumido: pertinência fina e tom são julgamento do modelo. Esse risco �
   - revalida estado e versão, status e validade das fontes citadas, janela de 24h e prazo de validade (TTL) da mensagem;
   - qualquer falha cancela a mensagem e registra o motivo; mensagem automática vencida nunca é enviada.
 - **Sem envio duplicado:** a mensagem passa a `enviando` com lease (60 s) antes da chamada HTTP, que tem limite de 30 s. Resultado ambíguo (timeout) vira `incerto` e **não** é repetido automaticamente; a supervisão é avisada. Preferimos o risco de não enviar ao de enviar duas vezes.
-- **Gateway:** único componente com a credencial de envio (teste de arquitetura). Rejeita mensagem interativa, template com botões e texto livre fora da janela de 24h.
+- **Gateway:** único componente que chama a Meta (teste de arquitetura); a credencial de cada empresa é decifrada por `RepositorioCredenciaisWhatsApp` só no momento do envio (M1). Rejeita mensagem interativa, template com botões e texto livre fora da janela de 24h.
 
 ### 4.5 Isolamento entre empresas e clientes (invariante 10)
 
@@ -228,6 +228,29 @@ Direcionamento do Victor de 2026-11-25 (decisões 24 a 30).
 - **Validade máxima (decisão 28):** `validadeMaximaDias` por classificação na política, aplicada na aprovação (não retroage a conhecimento já aprovado).
 - **HTTPS (decisão 30):** fora do desenvolvimento, a supervisão recusa requisição sem HTTPS (403, sem redirecionar) e envia HSTS; atrás de proxy, só os proxies listados em `Seguranca:ProxiesConfiaveis` informam o esquema. Autenticação de produção (identidade federada, expiração e rotação de credenciais, limite de taxa) continua pendente e é pré-requisito para expor a API.
 
+### 4.13 SaaS multi-tenant como Tech Provider (decisão 34)
+
+Diagnóstico (2026-11-26): o isolamento por empresa (RLS forçado, identidade comprovada no banco), o webhook assinado e idempotente, as filas duráveis no PostgreSQL e a regra de nunca repetir envio incerto já servem ao SaaS e ficam como estão. A Meta envia os webhooks de todos os clientes para a URL única do app, e o webhook já resolve a empresa pelo `phone_number_id`. Faltava: credencial e número por empresa (eram globais, na configuração), cadastro da WABA, eventos de conta no webhook, registro de eventos recusados, rodízio entre empresas na fila de envio, Embedded Signup, papel de operador da plataforma. Sem microsserviços nem fila externa: a fila no PostgreSQL (`FOR UPDATE SKIP LOCKED`) atende o volume previsto; reavaliar com métricas do piloto. O conteúdo bruto do webhook não é guardado (pode conter dado protegido em claro): a tabela de mensagens, gravada antes do 200, é a caixa de entrada.
+
+Fatos da Meta usados (documentação oficial, lida em 2026-11-26; reconfirmar antes da M3): Tech Provider usa só business tokens (um por cliente, obtido trocando o código do Embedded Signup em `GET /oauth/access_token`; o código vale 5 minutos); por cliente, inscrever o app na WABA (`POST /{waba_id}/subscribed_apps`) e registrar o número (`POST /{phone_number_id}/register`, com PIN); o cliente paga a Meta diretamente; webhooks de todos os clientes vão para a URL do app, com reenvio por até 7 dias e possíveis duplicatas; `account_update` com `PARTNER_ADDED` ao concluir o cadastro; limite de 10 novos clientes por 7 dias antes da verificação. Embedded Signup v2/v3 descontinuados em 15/10/2026: implementar a v4. Pontos que a documentação não deixa claros (`entry.id` do `account_update`; evento de remoção do parceiro; validade do business token) não são presumidos.
+
+Etapas (um PR cada, testes e CI verde):
+
+| Etapa | Entrega |
+|---|---|
+| **M1 Contas WhatsApp por empresa** | cadastro da WABA e dos números por empresa; credencial cifrada no banco (AES-256-GCM, chave fora do banco, ligada à empresa e à WABA), legível só pelo processo de envio por função mínima; número de origem = número em que o cliente escreveu por último; três etapas separadas por número (conta conectada com credencial, autorização operacional, envio habilitado), todas registradas no histórico com operador e motivo; envio desligado por padrão em cada número e no interruptor geral |
+| **M2 Webhook e filas** | eventos de conta (`account_update`, `phone_number_quality_update`, `account_alerts`) sem conteúdo de cliente; registro de eventos recusados ou de número desconhecido só com metadados e hash; nova tentativa só quando é comprovadamente seguro (resposta da Meta de que nada foi aceito), com espera crescente e limite, depois supervisão; incerto nunca é repetido; rodízio entre empresas na fila de envio |
+| **M3 Embedded Signup (backend)** | etapas separadas: conexão da WABA (troca do código, inscrição do app, registro do número), autorização operacional e ativação do envio; retomáveis e idempotentes; contra a Meta simulada; desligado sem as credenciais do app e sem login de produção (decisão 30) |
+| **M4 Ciclo de vida** | credencial recusada ou conta desativada pausa o número e aciona a supervisão; suspensão e desligamento da empresa |
+| **M5 Rastreabilidade** | identificador de correlação do webhook ao status; auditoria do cadastro; situação das filas por empresa |
+
+Fora do plano: templates, interface do Embedded Signup (F6, só testável com o app real), coexistência, qualquer conexão real.
+
+Limites conhecidos da M1 (revisão em `revisoes/2026-11-27-m1.md`):
+- O papel `worker` atende todas as empresas e tem a chave das credenciais: `credencial_envio` isola as empresas para os caminhos do código, não contra um processo de envio comprometido (S8).
+- O operador age com a conexão do dono; a auditoria depende de usar as funções `plataforma_*`, e o nome do operador é declarado. Na M3, papel de operador com autenticação e `execute` só nessas funções, nada nas tabelas (G3, S11).
+- Nada confere ainda, na Meta, que o número e o token pertencem à WABA informada: o operador confere manualmente antes de registrar. Na M3, os números vêm de `GET /{waba_id}/phone_numbers` com o token do cliente; conferir `entry.id` no webhook depende de confirmar o significado do campo (S1).
+
 ### 4.10 Segurança do repositório e dados
 
 - **Repositório público:**
@@ -269,6 +292,7 @@ F0 a F3 não dependem de decisão pendente nem de infraestrutura externa. Todas 
 
 | Fase | Situação |
 |---|---|
+| M1 Contas WhatsApp por empresa | implementada: conta, credencial cifrada e números por empresa; três etapas separadas e auditadas; número de saída pela última mensagem do cliente; envio desligado por padrão. Revisão em revisoes/2026-11-27-m1.md |
 | F4.5 Auditoria e Ruflo | decisões da F4 implementadas (conciliação fora de ordem, atraso configurável, reações, reavaliação de conhecimento, endereço institucional); portão de mudanças com Ruflo nos hooks (docs/desenvolvimento/portao.md); demonstração local; OpenAPI; guia do administrador. Revisão em revisoes/2026-11-25-f4-5.md |
 | F4 WhatsApp (preparação) | implementada sem número real: webhook assinado, fila durável da IA, eco do app, status de entrega, gateway real desligado. Revisão em revisoes/2026-11-25-f4.md. Requisitos externos em docs/setup/whatsapp-integracao.md |
 | Pós-F3 | implementada: identidade comprovada no banco, atribuição de conversas, visibilidade por papel, piso da política, e-mail institucional, validade máxima, HTTPS. Revisão em revisoes/2026-11-25-pos-f3.md |
@@ -284,7 +308,7 @@ F0 a F3 não dependem de decisão pendente nem de infraestrutura externa. Todas 
 |---|---|
 | Detector de valores e compromissos deixa passar um formato | na dúvida bloqueia; o conjunto adversarial cresce a cada caso real |
 | Bloqueio em excesso deixa o atendimento pouco útil | métricas de bloqueio por motivo; humanos ajustam a política |
-| Corrida entre humano assumindo e envio em andamento | trava única (FOR UPDATE) na decisão, no worker e na tomada de controle; janela residual = só a chamada HTTP |
+| Corrida entre humano assumindo e envio em andamento | trava única (FOR UPDATE) na decisão, no worker e na tomada de controle; janela residual = a leitura da credencial (M1) e a chamada HTTP |
 | Timeout ambíguo no envio | `incerto` sem repetição; supervisão avisada |
 | Mensagem parada no outbox enquanto a fonte é revogada | worker revalida fontes, com TTL |
 | Repositório público | gitleaks, push protection, nenhum dado real |

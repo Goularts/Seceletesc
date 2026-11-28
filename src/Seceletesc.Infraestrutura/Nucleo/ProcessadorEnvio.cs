@@ -112,7 +112,7 @@ public sealed class ProcessadorEnvio(
         {
             using var limite = CancellationTokenSource.CreateLinkedTokenSource(ct);
             limite.CancelAfter(_timeoutGateway);
-            resultado = await gateway.EnviarTextoAsync(tenantId, envio.WaIdCliente, envio.Texto, limite.Token).ConfigureAwait(false);
+            resultado = await gateway.EnviarTextoAsync(tenantId, envio.NumeroEmpresa, envio.WaIdCliente, envio.Texto, limite.Token).ConfigureAwait(false);
         }
 #pragma warning disable CA1031 // Qualquer erro após iniciar o envio é ambíguo: tratado como incerto, nunca repetido.
         catch (Exception)
@@ -243,7 +243,7 @@ public sealed class ProcessadorEnvio(
             select o.conversa_id, o.decisao_id, o.texto, o.status, o.expira_em,
                    case when o.decisao_id is null and o.autor_id is not null then 'humana' else d.tipo end,
                    coalesce(d.versao_estado, 0),
-                   coalesce(d.fontes_citadas::text, '[]'), cl.wa_id, o.autor_id
+                   coalesce(d.fontes_citadas::text, '[]'), cl.wa_id, o.autor_id, cv.numero_empresa
               from outbox o
               left join decisoes_envio d on d.id = o.decisao_id
               join conversas cv on cv.id = o.conversa_id
@@ -259,7 +259,8 @@ public sealed class ProcessadorEnvio(
         }
 
         return new Item(r.GetGuid(0), r.IsDBNull(1) ? null : r.GetGuid(1), r.GetString(2), r.GetString(3), r.GetFieldValue<DateTimeOffset>(4),
-            r.IsDBNull(5) ? null : r.GetString(5), r.GetInt64(6), RepositorioNucleo.LerChavesJson(r.GetString(7)), r.GetString(8), r.IsDBNull(9) ? null : r.GetGuid(9));
+            r.IsDBNull(5) ? null : r.GetString(5), r.GetInt64(6), RepositorioNucleo.LerChavesJson(r.GetString(7)), r.GetString(8), r.IsDBNull(9) ? null : r.GetGuid(9),
+            r.IsDBNull(10) ? null : r.GetString(10));
     }
 
     private static async Task<bool> AtualizarAsync(
@@ -323,5 +324,5 @@ public sealed class ProcessadorEnvio(
 
     private sealed record Item(
         Guid ConversaId, Guid? DecisaoId, string Texto, string Status, DateTimeOffset ExpiraEm,
-        string? Tipo, long VersaoDecisao, List<ChaveFonte> FontesCitadas, string WaIdCliente, Guid? AutorId);
+        string? Tipo, long VersaoDecisao, List<ChaveFonte> FontesCitadas, string WaIdCliente, Guid? AutorId, string? NumeroEmpresa);
 }
